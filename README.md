@@ -29,8 +29,9 @@ This repository contains multiple Django apps (alerts, defects, notifications, r
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-### 2) Environment variables
 
+
+### 2) Environment variables
 Create a .env file (do not commit it).
 Use .env.example as reference if needed.
 
@@ -39,5 +40,4 @@ python3 manage.py migrate
 python3 manage.py runserver
 
 ### Server:
-
 http://127.0.0.1:8000/

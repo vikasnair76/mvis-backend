@@ -1,0 +1,22 @@
+meta {
+  name: token
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/api/token/
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzg4ODYyNTI0LCJpYXQiOjE3NTczMjY1MjQsImp0aSI6ImJjODg0NmE4YTlhNzRiODFiZjRlZWE0YjBjZGUwZDNjIiwidXNlcl9pZCI6M30.QLgJjbF-JRbBxnusj20lnrZykGMr1G9BbC0UTUYEbws
+}
+
+body:json {
+  {
+    "username":"mvisadmin",
+    "password":"l2m@2020"
+  }
+}

@@ -1,0 +1,15 @@
+meta {
+  name: consolidated report
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{base_url}}/api/reports/consolidated-report/?start_date=21-06-2025
+  body: none
+  auth: inherit
+}
+
+params:query {
+  start_date: 21-06-2025
+}

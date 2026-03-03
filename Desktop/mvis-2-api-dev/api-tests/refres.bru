@@ -1,0 +1,22 @@
+meta {
+  name: refres
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{base_url}}/api/auth/refresh
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2OTA4MzU2NiwiaWF0IjoxNzY4OTk3MTY2LCJqdGkiOiI0ZDkzMThhZGVlMDY0YzIzYmRhMzgzNGNiZTViNjIxNSIsInVzZXJfaWQiOjE3OH0.SU2dnPfHUi2nyLGCIJ38KWLg7UHdGWVLJwtpu4Kuuq0"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

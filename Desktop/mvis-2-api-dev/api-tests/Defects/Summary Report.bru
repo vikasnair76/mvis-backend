@@ -1,0 +1,16 @@
+meta {
+  name: Summary Report
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{base_url}}/api/reports/summary-report/?start_date=01-06-2025&end_date=24-06-2025
+  body: none
+  auth: inherit
+}
+
+params:query {
+  start_date: 01-06-2025
+  end_date: 24-06-2025
+}

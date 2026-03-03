@@ -1,0 +1,22 @@
+meta {
+  name: Update loco no
+  type: http
+  seq: 2
+}
+
+patch {
+  url: {{base_url}}/api/trains/T20250906074338/
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "loco_no": 51060
+    
+  }
+}
+
+settings {
+  encodeUrl: true
+}

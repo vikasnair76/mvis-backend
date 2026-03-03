@@ -1,0 +1,26 @@
+meta {
+  name: summary-report
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:8000/api/reports/summary-report/?start_date=29-09-2025&end_date=29-09-2025&is_deleted=false&generated_by=
+  body: none
+  auth: inherit
+}
+
+params:query {
+  start_date: 29-09-2025
+  end_date: 29-09-2025
+  is_deleted: false
+  generated_by: 
+}
+
+headers {
+  Authorization: Token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzU5NzIzMDkxLCJpYXQiOjE3NTk2OTQyOTEsImp0aSI6ImIyMmVjNjY0MWE4NDRlOTJhZGY3ZmFjOTkyMmNjZDFkIiwidXNlcl9pZCI6NH0.ebbtgrPp8qRVZY3YF6jbo0SwNEGegMJQmmV9zJsC-K4
+}
+
+settings {
+  encodeUrl: true
+}

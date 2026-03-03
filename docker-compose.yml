@@ -1,0 +1,79 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: mvis-api-django:production
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8000}:${WEB_PORT:-8000}"
+    volumes:
+      - ${STATIC_ROOT}:/app/static
+      - ${MEDIA_HOST_PATH}:/app/media
+      - ${LOGS_HOST_PATH}:/app/logs
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=cbs_cloud.settings
+      - DEBUG=False
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             gunicorn cbs_cloud.wsgi:application -k gevent --bind 0.0.0.0:${WEB_PORT:-8000} --workers 4 --timeout 120 --max-requests 1000 --max-requests-jitter 50 --preload"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${WEB_PORT:-8000}/health/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  listener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: mvis-api-django:production
+    restart: unless-stopped
+    volumes:
+      - ${MEDIA_HOST_PATH}:/app/media
+      - ${LOGS_HOST_PATH}:/app/logs
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=cbs_cloud.settings
+      - DEBUG=False
+    command: python manage.py listen_processed_info
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+
+volumes:
+  static_volume:
+  media_volume:
+  redis_data:
+
+networks:
+  app-network:
+    driver: bridge
+    internal: false

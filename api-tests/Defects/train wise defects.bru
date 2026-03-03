@@ -1,0 +1,15 @@
+meta {
+  name: train wise defects
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/api/trains/T20250906074338/defects/
+  body: none
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Update Wagon No
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{base_url}}/api/trains/T20250906074338/wagons/W11/
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "wagon_id": "22131910447"
+  }
+}
+
+settings {
+  encodeUrl: true
+}

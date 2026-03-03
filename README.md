@@ -25,7 +25,6 @@ This repository contains multiple Django apps (alerts, defects, notifications, r
 ## Run Locally (without Docker)
 
 ### 1) Create venv + install deps
-```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt

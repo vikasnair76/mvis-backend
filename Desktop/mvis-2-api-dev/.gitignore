@@ -67,4 +67,5 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-/scripts/backup_prod_to_test.sh
+/scripts/backup_prod_to_test.sh.env
+.env.*

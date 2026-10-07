@@ -1,0 +1,907 @@
+import {Ionicons} from "@expo/vector-icons";
+import {router} from "expo-router";
+import {onAuthStateChanged, type User} from "firebase/auth";
+import {DateTime, IANAZone} from "luxon";
+import {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
+  SectionList,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import {
+  HistoryEventRow,
+  HistorySummaryCard,
+  compareHistoryMonths,
+  formatHistoryDayLabel,
+  formatHistoryMonthLabel,
+  getCurrentHistoryMonth,
+  resolvePersonalHistoryNavigationTarget,
+  shiftHistoryMonth,
+  type HistoryMonthValue,
+} from "../../components/history/PersonalHistoryTimeline";
+import {auth} from "../../services/firebase";
+import {
+  groupPersonalHistoryEventsByDay,
+  mergePersonalHistoryEventPages,
+  type PersonalHistoryDayGroup,
+  type PersonalHistoryMonthSummary,
+} from "../../services/personalHistoryAggregation";
+import {
+  getPersonalHistoryMonthPage,
+  getPersonalHistoryMonthSummary,
+  PersonalHistoryQueryError,
+  type PersonalHistoryCursor,
+} from "../../services/personalHistoryQueries";
+import {
+  type PersonalHistoryCategory,
+  type PersonalHistoryEvent,
+} from "../../services/personalHistory";
+import {UI_SIZES} from "../../services/theme";
+import {useAppTheme} from "../../services/useAppTheme";
+import {useCurrentAppTheme} from "../../services/useCurrentAppTheme";
+
+const EMPTY_SUMMARY: PersonalHistoryMonthSummary = {
+  totalEvents: 0,
+  goalCreatedCount: 0,
+  goalCompletedCount: 0,
+  subtaskCompletedCount: 0,
+  plannerAppliedCount: 0,
+  calendarBlockCreatedCount: 0,
+  boardCardCompletedCount: 0,
+  milestoneCompletedCount: 0,
+  routineCompletedCount: 0,
+  activeDayCount: 0,
+};
+const PAGE_SIZE = 50;
+type HistoryFilter = "all" | Exclude<
+PersonalHistoryCategory, "routine" | "system">;
+const HISTORY_FILTERS: {
+  value: HistoryFilter;
+  label: string;
+  emptyLabel: string;
+}[] = [
+  {value: "all", label: "All", emptyLabel: "history"},
+  {value: "goal", label: "Goals", emptyLabel: "Goal history"},
+  {value: "subtask", label: "Subtasks", emptyLabel: "Subtask history"},
+  {value: "planner", label: "Planner", emptyLabel: "Planner activity"},
+  {value: "calendar", label: "Calendar", emptyLabel: "Calendar history"},
+  {value: "board", label: "Boards", emptyLabel: "Board history"},
+  {value: "milestone", label: "Milestones", emptyLabel: "Milestone history"},
+];
+const historySessionState: {
+  ownerUid: string | null;
+  month: HistoryMonthValue | null;
+  timeZone: string | null;
+  filter: HistoryFilter;
+  scrollOffset: number;
+} = {
+  ownerUid: null,
+  month: null,
+  timeZone: null,
+  filter: "all",
+  scrollOffset: 0,
+};
+
+type HistoryUiError = "permission_denied" | "query_failed";
+
+function normalizeUiError(error: unknown): HistoryUiError {
+  return error instanceof PersonalHistoryQueryError &&
+    error.code === "permission_denied" ?
+    "permission_denied" : "query_failed";
+}
+
+export default function HistoryScreen() {
+  const [user, setUser] = useState<User | null>(auth.currentUser);
+  const [authReady, setAuthReady] = useState(false);
+  const deviceTimeZone = DateTime.local().zoneName;
+  const timeZone = IANAZone.isValidZone(deviceTimeZone) ?
+    deviceTimeZone : "UTC";
+  const currentMonth = useMemo(() =>
+    getCurrentHistoryMonth(timeZone), [timeZone]);
+  const [selectedMonth, setSelectedMonth] =
+    useState<HistoryMonthValue>(currentMonth);
+  const [selectedFilter, setSelectedFilter] =
+    useState<HistoryFilter>("all");
+  const [events, setEvents] = useState<PersonalHistoryEvent[]>([]);
+  const [summary, setSummary] =
+    useState<PersonalHistoryMonthSummary>(EMPTY_SUMMARY);
+  const [summaryComplete, setSummaryComplete] = useState(true);
+  const [hasSummary, setHasSummary] = useState(false);
+  const [invalidEventCount, setInvalidEventCount] = useState(0);
+  const [cursor, setCursor] = useState<PersonalHistoryCursor | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [initialError, setInitialError] = useState<HistoryUiError | null>(null);
+  const [refreshError, setRefreshError] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState(false);
+  const [summaryError, setSummaryError] = useState(false);
+  const requestIdRef = useRef(0);
+  const loadingMoreRef = useRef(false);
+  const mountedRef = useRef(true);
+  const {themeId} = useCurrentAppTheme();
+  const theme = useAppTheme(themeId);
+  const styles = useMemo(() => makeStyles(theme), [theme]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
+      requestIdRef.current += 1;
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+      setEvents([]);
+      setSummary(EMPTY_SUMMARY);
+      setSummaryComplete(true);
+      setHasSummary(false);
+      setSummaryError(false);
+      setInvalidEventCount(0);
+      setCursor(null);
+      setHasMore(false);
+      setInitialError(null);
+      setRefreshError(false);
+      setLoadMoreError(false);
+      const nextUid = nextUser?.uid ?? null;
+      if (
+        nextUid &&
+        historySessionState.ownerUid === nextUid &&
+        historySessionState.timeZone === timeZone &&
+        historySessionState.month &&
+        compareHistoryMonths(historySessionState.month, currentMonth) <= 0
+      ) {
+        setSelectedMonth(historySessionState.month);
+        setSelectedFilter(historySessionState.filter);
+      } else {
+        setSelectedMonth(currentMonth);
+        setSelectedFilter("all");
+        historySessionState.ownerUid = nextUid;
+        historySessionState.month = nextUid ? currentMonth : null;
+        historySessionState.timeZone = nextUid ? timeZone : null;
+        historySessionState.filter = "all";
+        historySessionState.scrollOffset = 0;
+      }
+      setUser(nextUser);
+      setAuthReady(true);
+    });
+    return () => {
+      mountedRef.current = false;
+      unsubscribe();
+    };
+  }, [currentMonth, timeZone]);
+
+  const monthRequestModel = useMemo(() => ({
+    ownerUid: user?.uid ?? "",
+    year: selectedMonth.year,
+    month: selectedMonth.month,
+    timeZone,
+  }), [selectedMonth.month, selectedMonth.year, timeZone, user?.uid]);
+  const pageRequestModel = useMemo(() => ({
+    ...monthRequestModel,
+    categories: selectedFilter === "all" ?
+      undefined : [selectedFilter] as PersonalHistoryCategory[],
+  }), [monthRequestModel, selectedFilter]);
+
+  const loadMonth = useCallback(async (mode: "initial" | "refresh") => {
+    if (!user?.uid) return;
+    const requestId = ++requestIdRef.current;
+    loadingMoreRef.current = false;
+    setLoadingMore(false);
+    if (mode === "initial") {
+      setLoading(true);
+      setEvents([]);
+      setSummary(EMPTY_SUMMARY);
+      setSummaryComplete(true);
+      setHasSummary(false);
+      setSummaryError(false);
+      setCursor(null);
+      setHasMore(false);
+      setInitialError(null);
+      setInvalidEventCount(0);
+    } else {
+      setRefreshing(true);
+      setRefreshError(false);
+    }
+    try {
+      const [pageResult, summaryResult] = await Promise.allSettled([
+        getPersonalHistoryMonthPage({...pageRequestModel, pageSize: PAGE_SIZE}),
+        getPersonalHistoryMonthSummary(monthRequestModel),
+      ]);
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      const pageInvalidCount = pageResult.status === "fulfilled" ?
+        pageResult.value.invalidEventCount : 0;
+      const summaryInvalidCount = summaryResult.status === "fulfilled" ?
+        summaryResult.value.invalidEventCount : 0;
+      setInvalidEventCount(pageInvalidCount + summaryInvalidCount);
+
+      if (pageResult.status === "fulfilled") {
+        const page = pageResult.value;
+        setEvents(page.events);
+        setCursor(page.nextCursor);
+        setHasMore(page.hasMore);
+        setInitialError(null);
+        console.info("personal_history_ui_month_loaded", {
+          year: selectedMonth.year,
+          month: selectedMonth.month,
+          timeZone,
+          count: page.events.length,
+          hasMore: page.hasMore,
+        });
+      } else {
+        const code = normalizeUiError(pageResult.reason);
+        if (mode === "initial") setInitialError(code);
+        else setRefreshError(true);
+        console.warn("personal_history_ui_month_failed", {
+          year: selectedMonth.year,
+          month: selectedMonth.month,
+          timeZone,
+          errorCode: code,
+        });
+      }
+
+      if (summaryResult.status === "fulfilled") {
+        const monthSummary = summaryResult.value;
+        setSummary(monthSummary.summary);
+        setSummaryComplete(monthSummary.summaryComplete);
+        setHasSummary(true);
+        setSummaryError(false);
+        console.info("personal_history_ui_summary_loaded", {
+          year: selectedMonth.year,
+          month: selectedMonth.month,
+          timeZone,
+          summaryComplete: monthSummary.summaryComplete,
+        });
+      } else {
+        setSummaryError(true);
+        console.warn("personal_history_ui_summary_failed", {
+          year: selectedMonth.year,
+          month: selectedMonth.month,
+          timeZone,
+          errorCode: normalizeUiError(summaryResult.reason),
+        });
+      }
+      console.info("personal_history_ui_load_settled", {
+        year: selectedMonth.year,
+        month: selectedMonth.month,
+        timeZone,
+        pageLoaded: pageResult.status === "fulfilled",
+        summaryLoaded: summaryResult.status === "fulfilled",
+      });
+    } finally {
+      if (mountedRef.current && requestId === requestIdRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  }, [
+    monthRequestModel,
+    pageRequestModel,
+    selectedMonth.month,
+    selectedMonth.year,
+    timeZone,
+    user?.uid,
+  ]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    if (!user?.uid) {
+      requestIdRef.current += 1;
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+    void loadMonth("initial");
+  }, [
+    authReady,
+    loadMonth,
+    selectedMonth.month,
+    selectedMonth.year,
+    timeZone,
+    user?.uid,
+  ]);
+
+  const loadMore = useCallback(async () => {
+    if (!user?.uid || !cursor || !hasMore || loadingMoreRef.current) return;
+    const requestId = requestIdRef.current;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    setLoadMoreError(false);
+    try {
+      const page = await getPersonalHistoryMonthPage({
+        ...pageRequestModel,
+        pageSize: PAGE_SIZE,
+        cursor,
+      });
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      setEvents((current) => mergePersonalHistoryEventPages(
+        current,
+        page.events,
+        (event) => {
+          console.warn("personal_history_ui_page_conflict", {
+            eventType: event.eventType,
+            entityType: event.entityType,
+          });
+        }
+      ));
+      setCursor(page.nextCursor);
+      setHasMore(page.hasMore);
+      setInvalidEventCount((count) => count + page.invalidEventCount);
+      console.info("personal_history_ui_page_loaded", {
+        year: selectedMonth.year,
+        month: selectedMonth.month,
+        timeZone,
+        count: page.events.length,
+        hasMore: page.hasMore,
+      });
+    } catch (error) {
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      setLoadMoreError(true);
+      console.warn("personal_history_ui_page_failed", {
+        year: selectedMonth.year,
+        month: selectedMonth.month,
+        timeZone,
+        errorCode: normalizeUiError(error),
+      });
+    } finally {
+      loadingMoreRef.current = false;
+      if (mountedRef.current && requestId === requestIdRef.current) {
+        setLoadingMore(false);
+      }
+    }
+  }, [
+    cursor,
+    hasMore,
+    pageRequestModel,
+    selectedMonth.month,
+    selectedMonth.year,
+    timeZone,
+    user?.uid,
+  ]);
+
+  const dayGroups = useMemo(() =>
+    groupPersonalHistoryEventsByDay(events, timeZone), [events, timeZone]);
+  const sections = useMemo(() => dayGroups.map((group) => ({
+    ...group, data: group.events,
+  })), [dayGroups]);
+  const viewingCurrentMonth =
+    compareHistoryMonths(selectedMonth, currentMonth) === 0;
+  const canMoveNext =
+    compareHistoryMonths(selectedMonth, currentMonth) < 0;
+
+  const selectMonth = useCallback((next: HistoryMonthValue) => {
+    if (compareHistoryMonths(next, currentMonth) > 0) return;
+    requestIdRef.current += 1;
+    loadingMoreRef.current = false;
+    setLoading(true);
+    setEvents([]);
+    setSummary(EMPTY_SUMMARY);
+    setSummaryComplete(true);
+    setHasSummary(false);
+    setInvalidEventCount(0);
+    setInitialError(null);
+    setRefreshError(false);
+    setLoadMoreError(false);
+    setLoadingMore(false);
+    setCursor(null);
+    setHasMore(false);
+    setSelectedMonth(next);
+    historySessionState.month = next;
+    historySessionState.ownerUid = user?.uid ?? null;
+    historySessionState.timeZone = timeZone;
+    historySessionState.scrollOffset = 0;
+    console.info("history_month_changed", {
+      year: next.year,
+      month: next.month,
+      timeZone,
+    });
+  }, [currentMonth, timeZone, user?.uid]);
+
+  const selectFilter = useCallback((next: HistoryFilter) => {
+    if (next === selectedFilter) return;
+    requestIdRef.current += 1;
+    loadingMoreRef.current = false;
+    setLoading(true);
+    setEvents([]);
+    setCursor(null);
+    setHasMore(false);
+    setInvalidEventCount(0);
+    setInitialError(null);
+    setRefreshError(false);
+    setLoadMoreError(false);
+    setLoadingMore(false);
+    setSelectedFilter(next);
+    historySessionState.filter = next;
+    historySessionState.ownerUid = user?.uid ?? null;
+    historySessionState.scrollOffset = 0;
+    console.info("history_filter_changed", {
+      category: next,
+      year: selectedMonth.year,
+      month: selectedMonth.month,
+      timeZone,
+    });
+  }, [
+    selectedFilter,
+    selectedMonth.month,
+    selectedMonth.year,
+    timeZone,
+    user?.uid,
+  ]);
+
+  const openEvent = useCallback((event: PersonalHistoryEvent) => {
+    const target = resolvePersonalHistoryNavigationTarget(event);
+    if (!target) {
+      console.info("personal_history_ui_navigation_unavailable", {
+        eventType: event.eventType,
+        entityType: event.entityType,
+      });
+      return;
+    }
+    console.info("history_navigation_opened", {
+      eventType: event.eventType,
+      entityType: event.entityType,
+    });
+    historySessionState.month = selectedMonth;
+    historySessionState.ownerUid = user?.uid ?? null;
+    historySessionState.timeZone = timeZone;
+    historySessionState.filter = selectedFilter;
+    router.push(target as never);
+  }, [selectedFilter, selectedMonth, timeZone, user?.uid]);
+
+  const header = (
+    <View style={styles.headerContent}>
+      <Text style={styles.title} accessibilityRole="header">History</Text>
+      <Text style={styles.subtitle}>
+        A factual monthly timeline of recorded activity.
+      </Text>
+      <View style={styles.monthControls}>
+        <Pressable
+          onPress={() => selectMonth(shiftHistoryMonth(selectedMonth, -1))}
+          style={styles.monthButton}
+          accessibilityRole="button"
+          accessibilityLabel="Show previous month"
+        >
+          <Ionicons name="chevron-back" size={22} color={theme.colors.text} />
+        </Pressable>
+        <Text
+          style={styles.monthLabel}
+          accessibilityRole="header"
+        >
+          {formatHistoryMonthLabel(selectedMonth)}
+        </Text>
+        <Pressable
+          onPress={() => selectMonth(shiftHistoryMonth(selectedMonth, 1))}
+          disabled={!canMoveNext}
+          style={[
+            styles.monthButton,
+            !canMoveNext && styles.monthButtonDisabled,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Show next month"
+          accessibilityState={{disabled: !canMoveNext}}
+        >
+          <Ionicons
+            name="chevron-forward"
+            size={22}
+            color={canMoveNext ? theme.colors.text : theme.colors.textMuted}
+          />
+        </Pressable>
+      </View>
+      {!viewingCurrentMonth ? (
+        <Pressable
+          onPress={() => selectMonth(currentMonth)}
+          style={styles.currentMonthButton}
+          accessibilityRole="button"
+          accessibilityLabel="Return to current month"
+        >
+          <Text style={styles.currentMonthText}>Current month</Text>
+        </Pressable>
+      ) : null}
+      {user?.uid && !loading && hasSummary ? (
+        <>
+          <HistorySummaryCard
+            summary={summary}
+            summaryComplete={summaryComplete}
+            theme={theme}
+          />
+          <Text style={styles.summaryContract}>
+            Summary reflects all activity this month.
+          </Text>
+        </>
+      ) : null}
+      {user?.uid ? (
+        <View style={styles.filterSection}>
+          <Text style={styles.filterHeading} accessibilityRole="header">
+            Timeline category
+          </Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filterRow}
+            accessibilityRole="tablist"
+          >
+            {HISTORY_FILTERS.map((filter) => {
+              const selected = selectedFilter === filter.value;
+              return (
+                <Pressable
+                  key={filter.value}
+                  onPress={() => selectFilter(filter.value)}
+                  style={[
+                    styles.filterChip,
+                    selected && styles.filterChipSelected,
+                  ]}
+                  accessibilityRole="tab"
+                  accessibilityLabel={`Show ${filter.label} history`}
+                  accessibilityState={{selected}}
+                >
+                  <Text style={[
+                    styles.filterChipText,
+                    selected && styles.filterChipTextSelected,
+                  ]}>
+                    {filter.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      ) : null}
+      {refreshError ? (
+        <View style={styles.quietNotice}>
+          <Text style={styles.quietNoticeText}>
+            History could not be refreshed. Showing the previously loaded data.
+          </Text>
+          <Pressable
+            onPress={() => void loadMonth("refresh")}
+            accessibilityRole="button"
+            accessibilityLabel="Retry history refresh"
+          >
+            <Text style={styles.noticeAction}>Try again</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {user?.uid && !loading && summaryError ? (
+        <View style={styles.quietNotice}>
+          <Text style={styles.quietNoticeText}>
+            Monthly totals could not be loaded. Timeline items remain available.
+          </Text>
+        </View>
+      ) : null}
+      {invalidEventCount > 0 ? (
+        <Text style={styles.malformedNotice}>
+          Some history items could not be displayed.
+        </Text>
+      ) : null}
+    </View>
+  );
+
+  const empty = !authReady || loading ? (
+    <View
+      style={styles.stateCard}
+      accessibilityLiveRegion="polite"
+      accessibilityLabel="Loading monthly history"
+    >
+      <ActivityIndicator color={theme.colors.primary} />
+      <Text style={styles.stateText}>Loading monthly history…</Text>
+    </View>
+  ) : !user ? (
+    <View style={styles.stateCard}>
+      <Text style={styles.stateTitle}>Sign in to view History</Text>
+      <Text style={styles.stateText}>
+        Your personal monthly timeline is available after you sign in.
+      </Text>
+    </View>
+  ) : initialError ? (
+    <View style={styles.errorCard}>
+      <Text style={styles.errorTitle}>History could not be loaded.</Text>
+      <Text style={styles.errorText}>
+        {initialError === "permission_denied" ?
+          "This history is not available for the current account." :
+          "Check your connection and try again."}
+      </Text>
+      <Pressable
+        onPress={() => void loadMonth("initial")}
+        style={styles.retryButton}
+        accessibilityRole="button"
+        accessibilityLabel="Retry loading History"
+      >
+        <Text style={styles.retryText}>Try again</Text>
+      </Pressable>
+    </View>
+  ) : (
+    <View style={styles.stateCard}>
+      <Text style={styles.stateTitle}>
+        {selectedFilter === "all" ?
+          `No history yet for ${formatHistoryMonthLabel(selectedMonth)}.` :
+          `No ${HISTORY_FILTERS.find((item) =>
+            item.value === selectedFilter)?.emptyLabel ??
+          "history"} this month.`}
+      </Text>
+      <Text style={styles.stateText}>
+        Completed goals, subtasks, planner actions, calendar blocks, and other
+        recorded activity will appear here.
+      </Text>
+    </View>
+  );
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <SectionList<
+        PersonalHistoryEvent,
+        PersonalHistoryDayGroup & {data: PersonalHistoryEvent[]}
+      >
+        key={`${selectedMonth.year}-${selectedMonth.month}-${selectedFilter}-${timeZone}`}
+        sections={sections}
+        keyExtractor={(event) => event.id}
+        renderItem={({item}) => {
+          const target = resolvePersonalHistoryNavigationTarget(item);
+          return (
+            <HistoryEventRow
+              event={item}
+              timeZone={timeZone}
+              theme={theme}
+              onOpenEvent={target ? openEvent : undefined}
+            />
+          );
+        }}
+        renderSectionHeader={({section}) => (
+          <Text
+            style={styles.dayHeader}
+            accessibilityRole="header"
+          >
+            {formatHistoryDayLabel(section.dayKey, timeZone)}
+          </Text>
+        )}
+        ListHeaderComponent={header}
+        ListEmptyComponent={empty}
+        ListFooterComponent={hasMore ? (
+          <View style={styles.footer}>
+            {loadMoreError ? (
+              <Text style={styles.loadMoreError}>
+                More history could not be loaded. Try again.
+              </Text>
+            ) : null}
+            <Pressable
+              onPress={() => void loadMore()}
+              disabled={loadingMore}
+              style={styles.loadMoreButton}
+              accessibilityRole="button"
+              accessibilityLabel="Load more history events"
+              accessibilityState={{disabled: loadingMore}}
+            >
+              {loadingMore ? (
+                <ActivityIndicator color={theme.colors.primary} />
+              ) : (
+                <Text style={styles.loadMoreText}>
+                  {loadMoreError ? "Retry load more" : "Load more"}
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        ) : events.length > 0 && !loading ? (
+          <Text
+            style={styles.endOfMonth}
+            accessibilityLabel="End of history for this month"
+          >
+            End of history for this month.
+          </Text>
+        ) : <View style={styles.footerSpace} />}
+        contentContainerStyle={styles.content}
+        ItemSeparatorComponent={() => <View style={styles.itemSeparator} />}
+        SectionSeparatorComponent={() => <View style={styles.sectionSeparator} />}
+        stickySectionHeadersEnabled={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={9}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              console.info("history_refresh", {
+                year: selectedMonth.year,
+                month: selectedMonth.month,
+                timeZone,
+                category: selectedFilter,
+              });
+              void loadMonth("refresh");
+            }}
+            tintColor={theme.colors.primary}
+            colors={[theme.colors.primary]}
+            accessibilityLabel="Refresh monthly history"
+          />
+        }
+        showsVerticalScrollIndicator={false}
+        contentOffset={{x: 0, y: historySessionState.scrollOffset}}
+        onScroll={(event) => {
+          historySessionState.scrollOffset =
+            event.nativeEvent.contentOffset.y;
+          historySessionState.ownerUid = user?.uid ?? null;
+          historySessionState.month = selectedMonth;
+          historySessionState.timeZone = timeZone;
+          historySessionState.filter = selectedFilter;
+        }}
+        scrollEventThrottle={32}
+      />
+    </SafeAreaView>
+  );
+}
+
+const makeStyles = (theme: ReturnType<typeof useAppTheme>) =>
+  StyleSheet.create({
+    safe: {flex: 1, backgroundColor: theme.colors.background},
+    content: {
+      width: "100%",
+      maxWidth: 760,
+      alignSelf: "center",
+      paddingHorizontal: UI_SIZES.spacing.lg,
+      paddingTop: UI_SIZES.spacing.md,
+      paddingBottom: 64,
+      flexGrow: 1,
+    },
+    headerContent: {gap: UI_SIZES.spacing.md, marginBottom: UI_SIZES.spacing.lg},
+    title: {color: theme.colors.text, fontSize: 32, fontWeight: "900"},
+    subtitle: {color: theme.colors.textMuted, fontSize: 15, lineHeight: 22},
+    monthControls: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: UI_SIZES.spacing.sm,
+    },
+    monthButton: {
+      width: 44,
+      minHeight: 44,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 22,
+      backgroundColor: theme.colors.surfaceMuted,
+    },
+    monthButtonDisabled: {opacity: 0.45},
+    monthLabel: {
+      flex: 1,
+      color: theme.colors.text,
+      textAlign: "center",
+      fontSize: 21,
+      lineHeight: 28,
+      fontWeight: "900",
+    },
+    currentMonthButton: {
+      alignSelf: "center",
+      minHeight: 44,
+      justifyContent: "center",
+      paddingHorizontal: UI_SIZES.spacing.lg,
+    },
+    currentMonthText: {color: theme.colors.primary, fontWeight: "900"},
+    dayHeader: {
+      color: theme.colors.text,
+      backgroundColor: theme.colors.background,
+      fontSize: 17,
+      lineHeight: 24,
+      fontWeight: "900",
+      paddingTop: UI_SIZES.spacing.sm,
+      paddingBottom: UI_SIZES.spacing.sm,
+    },
+    itemSeparator: {height: UI_SIZES.spacing.sm},
+    sectionSeparator: {height: UI_SIZES.spacing.md},
+    stateCard: {
+      minHeight: 150,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: UI_SIZES.spacing.sm,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface,
+      borderRadius: UI_SIZES.radius.lg,
+      padding: UI_SIZES.cardPadding.lg,
+    },
+    stateTitle: {
+      color: theme.colors.text,
+      fontSize: 18,
+      lineHeight: 25,
+      fontWeight: "900",
+      textAlign: "center",
+    },
+    stateText: {
+      color: theme.colors.textMuted,
+      lineHeight: 21,
+      textAlign: "center",
+    },
+    errorCard: {
+      gap: UI_SIZES.spacing.sm,
+      borderWidth: 1,
+      borderColor: theme.colors.dangerBorder,
+      backgroundColor: theme.colors.dangerBackground,
+      borderRadius: UI_SIZES.radius.lg,
+      padding: UI_SIZES.cardPadding.lg,
+    },
+    errorTitle: {
+      color: theme.colors.dangerText,
+      fontSize: 18,
+      fontWeight: "900",
+    },
+    errorText: {color: theme.colors.dangerText, lineHeight: 21},
+    retryButton: {
+      minHeight: 44,
+      alignSelf: "flex-start",
+      justifyContent: "center",
+      paddingHorizontal: UI_SIZES.spacing.md,
+    },
+    retryText: {color: theme.colors.dangerText, fontWeight: "900"},
+    quietNotice: {
+      borderWidth: 1,
+      borderColor: theme.colors.warningBorder,
+      backgroundColor: theme.colors.warningBackground,
+      borderRadius: UI_SIZES.radius.md,
+      padding: UI_SIZES.cardPadding.sm,
+      gap: UI_SIZES.spacing.xs,
+    },
+    quietNoticeText: {color: theme.colors.warningText, lineHeight: 19},
+    noticeAction: {
+      color: theme.colors.warningText,
+      fontWeight: "900",
+      minHeight: 44,
+      textAlignVertical: "center",
+    },
+    malformedNotice: {color: theme.colors.textMuted, lineHeight: 19},
+    summaryContract: {
+      color: theme.colors.textMuted,
+      fontSize: 12,
+      lineHeight: 17,
+      textAlign: "center",
+    },
+    filterSection: {gap: UI_SIZES.spacing.sm},
+    filterHeading: {
+      color: theme.colors.text,
+      fontSize: 14,
+      fontWeight: "900",
+    },
+    filterRow: {
+      gap: UI_SIZES.spacing.sm,
+      paddingRight: UI_SIZES.spacing.lg,
+    },
+    filterChip: {
+      minHeight: 44,
+      justifyContent: "center",
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface,
+      paddingHorizontal: UI_SIZES.spacing.lg,
+    },
+    filterChipSelected: {
+      borderColor: theme.colors.primary,
+      backgroundColor: theme.colors.badge,
+    },
+    filterChipText: {
+      color: theme.colors.textMuted,
+      fontWeight: "800",
+    },
+    filterChipTextSelected: {color: theme.colors.badgeText},
+    footer: {
+      minHeight: 72,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: UI_SIZES.spacing.sm,
+    },
+    loadMoreButton: {
+      minHeight: 48,
+      minWidth: 160,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    loadMoreText: {color: theme.colors.primary, fontWeight: "900"},
+    loadMoreError: {color: theme.colors.dangerText, textAlign: "center"},
+    endOfMonth: {
+      minHeight: 56,
+      color: theme.colors.textMuted,
+      textAlign: "center",
+      textAlignVertical: "center",
+      paddingVertical: UI_SIZES.spacing.lg,
+    },
+    footerSpace: {height: UI_SIZES.spacing.lg},
+  });

@@ -1,0 +1,68 @@
+{
+  "project_info": {
+    "project_number": "110225211882",
+    "project_id": "dayta---goalsettingapp",
+    "storage_bucket": "dayta---goalsettingapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:110225211882:android:2f31d314c77d8b0276f293",
+        "android_client_info": {
+          "package_name": "com.dayTa.goalsettingapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "110225211882-7a0lig000q35fh6b0ptl609hb9stf6va.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAR4Ymgg6xqnqPh9yFKiksk0GI5Qfbf8Oc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "110225211882-7a0lig000q35fh6b0ptl609hb9stf6va.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:110225211882:android:ef9c2bcd32f6f44176f293",
+        "android_client_info": {
+          "package_name": "com.mjcreel15.goalapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "110225211882-7a0lig000q35fh6b0ptl609hb9stf6va.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAR4Ymgg6xqnqPh9yFKiksk0GI5Qfbf8Oc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "110225211882-7a0lig000q35fh6b0ptl609hb9stf6va.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

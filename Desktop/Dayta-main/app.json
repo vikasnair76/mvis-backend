@@ -1,0 +1,77 @@
+{
+  "expo": {
+    "name": "dayTa",
+    "slug": "goalapp",
+    "version": "1.9.1",
+    "orientation": "portrait",
+    "icon": "./assets/images/dayTa-icon.png",
+    "scheme": "goalapp",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mjcreel15.dayta",
+      "buildNumber": "1.01",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "googleServicesFile": "./GoogleService-Info.plist"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/images/dayTa-85.png",
+        "backgroundImage": "./assets/images/warm-white.png",
+        "monochromeImage": "./assets/images/dayTa-monochrome-85.png"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.mjcreel15.goalapp",
+      "googleServicesFile": "./google-services.json",
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/dayTa-85.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/dayTa-85.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFBEB",
+          "dark": {
+            "backgroundColor": "#1A1A1A"
+          }
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
+        }
+      ],
+      "expo-web-browser",
+      "expo-notifications",
+      "@react-native-community/datetimepicker",
+      "@react-native-google-signin/google-signin",
+      "expo-font",
+      "expo-video"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "18a34711-8480-42af-9246-7574d0f6d4fa"
+      }
+    }
+  }
+}

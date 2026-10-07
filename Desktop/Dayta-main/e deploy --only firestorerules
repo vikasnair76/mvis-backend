@@ -1,0 +1,48 @@
+warning: in the working copy of 'firestore.rules', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/firestore.rules b/firestore.rules[m
+[1mindex f35ed16..e4df2c6 100644[m
+[1m--- a/firestore.rules[m
+[1m+++ b/firestore.rules[m
+[36m@@ -195,6 +195,17 @@[m [mfunction canWritePlanningBoardData(data) {[m
+     );[m
+ }[m
+ [m
+[32m+[m[32mfunction canManagePlanningBoardData(data) {[m
+[32m+[m[32m  return signedIn()[m
+[32m+[m[32m    && ([m
+[32m+[m[32m      data.ownerUid == request.auth.uid[m
+[32m+[m[32m      || ([m
+[32m+[m[32m        data.groupId is string[m
+[32m+[m[32m        && isGroupAdmin(data.groupId)[m
+[32m+[m[32m      )[m
+[32m+[m[32m    );[m
+[32m+[m[32m}[m
+[32m+[m
+ function isValidPlanningCalendarEventScope(value) {[m
+   return value in ["personal", "group"];[m
+ }[m
+[36m@@ -941,7 +952,7 @@[m [mmatch /planningBoards/{boardId} {[m
+       ([m
+         request.resource.data.scope == "group"[m
+         && request.resource.data.groupId is string[m
+[31m-        && isGroupMember(request.resource.data.groupId)[m
+[32m+[m[32m        && isGroupAdmin(request.resource.data.groupId)[m
+         && ([m
+           !("ownerUid" in request.resource.data)[m
+           || request.resource.data.ownerUid == null[m
+[36m@@ -949,7 +960,7 @@[m [mmatch /planningBoards/{boardId} {[m
+       )[m
+     );[m
+ [m
+[31m-  allow update: if canWritePlanningBoardData(resource.data)[m
+[32m+[m[32m  allow update: if canManagePlanningBoardData(resource.data)[m
+     && hasValidPlanningBoardShape(request.resource.data)[m
+     && request.resource.data.id == resource.data.id[m
+     && request.resource.data.scope == resource.data.scope[m
+[36m@@ -3027,4 +3038,4 @@[m [mallow get: if signedIn()[m
+   allow delete: if false;[m
+ }[m
+   }[m
+[31m-}[m
+\ No newline at end of file[m
+[32m+[m[32m}[m

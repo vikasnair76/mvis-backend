@@ -1,0 +1,1602 @@
+//import { onAuthStateChanged, User } from "firebase/auth";
+//import { onAuthStateChanged, type User as FirebaseUser } from "firebase/auth";
+import { Link } from "expo-router";
+import { onAuthStateChanged } from "firebase/auth";
+import {
+  addDoc,
+  collection,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  where
+} from "firebase/firestore";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { auth, db } from "../../services/firebase";
+import { normalizeGoalInput } from "../../services/goalNormalization";
+import type {
+  Goal,
+  GoalFormInput,
+  MetricType,
+} from "../../services/goalTypes";
+import {
+  subscribeMyGroupMemberships,
+  type GroupMemberDoc,
+} from "../../services/groups";
+import {
+  archivePlanningBoard,
+  createPlanningBoard,
+  subscribeGroupPlanningBoards,
+  subscribePersonalPlanningBoards,
+  type PlanningBoardDoc,
+} from "../../services/boards";
+import type { AppThemeTokens } from "../../services/theme";
+import { useCurrentAppTheme } from "../../services/useCurrentAppTheme";
+
+function computeProgress(current: number | null, target: number | null): number {
+  if (target == null || target <= 0) return 0;
+  const safeCurrent = current ?? 0;
+  const pct = (safeCurrent / target) * 100;
+  return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
+function formatCompletedDate(completedAtMs?: number | null): string | null {
+  if (!completedAtMs) return null;
+
+  return new Date(completedAtMs).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function getSharedGoalLabel(goal: Goal): string | null {
+  const accessRole = (goal as any).sharedAccessRole;
+  const sharedGroupName = (goal as any).sharedGroupName;
+  const sharedGroupId = (goal as any).sharedGroupId;
+
+  if (accessRole === "assigned_member") {
+    if (typeof sharedGroupName === "string" && sharedGroupName.trim()) {
+      return `Shared goal • Assigned to me • ${sharedGroupName.trim()}`;
+    }
+
+    return "Shared goal • Assigned to me";
+  }
+
+  if (typeof sharedGroupName === "string" && sharedGroupName.trim()) {
+    return `Shared goal • ${sharedGroupName.trim()}`;
+  }
+
+  const sharedGroupIds = Array.isArray(goal.sharedGroupIds)
+    ? goal.sharedGroupIds
+    : [];
+
+  if (sharedGroupId || sharedGroupIds.length > 0) {
+    return "Shared goal";
+  }
+
+  return null;
+}
+
+type ActiveGroupMembership = GroupMemberDoc & { groupId: string };
+type GroupPlanningBoard = PlanningBoardDoc & { groupName: string };
+
+export default function GoalsScreen() {
+  //const [user, setUser] = useState<User | null>(auth.currentUser);
+  //const [user, setUser] = useState<FirebaseUser | null>(auth.currentUser);
+ const [user, setUser] = useState(auth.currentUser);
+const [authReady, setAuthReady] = useState(false);
+
+
+const { theme } = useCurrentAppTheme();
+const styles = useMemo(() => makeStyles(theme), [theme]); 
+useEffect(() => {
+  const unsub = onAuthStateChanged(auth, (u) => {
+    setUser(u);
+    setAuthReady(true); // ✅ tells us Firebase finished restoring session
+  });
+  return () => unsub();
+}, []);
+
+/** useEffect(() => {
+  const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+  return () => unsub();
+}, []); **/
+const uid = auth.currentUser?.uid ?? null;
+
+const [ownedGoals, setOwnedGoals] = useState<Goal[]>([]);
+const [assignedSharedGoals, setAssignedSharedGoals] = useState<Goal[]>([]);
+const [planningBoards, setPlanningBoards] = useState<PlanningBoardDoc[]>([]);
+const [activeGroupMemberships, setActiveGroupMemberships] = useState<
+  ActiveGroupMembership[]
+>([]);
+const [loadingGroupMemberships, setLoadingGroupMemberships] = useState(true);
+const [groupMembershipsError, setGroupMembershipsError] = useState(false);
+const [groupPlanningBoards, setGroupPlanningBoards] = useState<
+  GroupPlanningBoard[]
+>([]);
+const [loadingGroupPlanning, setLoadingGroupPlanning] = useState(false);
+const [groupPlanningError, setGroupPlanningError] = useState<string | null>(
+  null
+);
+const [loading, setLoading] = useState(true);
+
+const goals = useMemo(() => {
+  const byId = new Map<string, Goal>();
+
+  ownedGoals.forEach((goal) => byId.set(goal.id, goal));
+  assignedSharedGoals.forEach((goal) => {
+    if (!byId.has(goal.id)) byId.set(goal.id, goal);
+  });
+
+  return Array.from(byId.values()).sort(
+    (a, b) => (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
+  );
+}, [ownedGoals, assignedSharedGoals]);
+
+const activeGoals = goals.filter((g) => g.status !== "completed");
+const completedGoals = goals
+  .filter((g) => g.status === "completed")
+  .sort((a, b) => (b.completedAtMs ?? 0) - (a.completedAtMs ?? 0));
+
+  // Form state
+const [title, setTitle] = useState("");
+const [description, setDescription] = useState("");
+const [metricType, setMetricType] = useState<MetricType>("none");
+
+const [showCreateGoal, setShowCreateGoal] = useState(false);
+const [showCreateBoardForm, setShowCreateBoardForm] = useState(false);
+const [boardTitleInput, setBoardTitleInput] = useState("");
+const [savingBoard, setSavingBoard] = useState(false);
+const [metricUnitInput, setMetricUnitInput] = useState("");
+const [metricTargetValueInput, setMetricTargetValueInput] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  const metricTypeLabel = useMemo(() => metricType, [metricType]);
+
+  const isMetricEnabled = metricType !== "none";
+const isWeightMetric = metricType === "weight";
+const isCustomMetric = metricType === "custom";
+
+const lockedMetricUnitLabel = useMemo(() => {
+  switch (metricType) {
+    case "hours":
+      return "hours";
+    case "pages":
+      return "pages";
+    case "reps":
+      return "reps";
+    default:
+      return null;
+  }
+}, [metricType]);
+
+useEffect(() => {
+  if (!authReady) return;
+
+  if (!uid) {
+    setOwnedGoals([]);
+    setLoading(false);
+    return;
+  }
+
+  const goalsRef = collection(db, "goals");
+
+  const q = query(
+    goalsRef,
+    where("userId", "==", uid),
+    orderBy("createdAtMs", "desc")
+  );
+
+  const unsub = onSnapshot(
+    q,
+    (snap) => {
+      const list: Goal[] = snap.docs.map((d) => {
+        const data = d.data() as Omit<Goal, "id">;
+        return { id: d.id, ...data };
+      });
+      setOwnedGoals(list);
+      setLoading(false);
+    },
+    (err) => {
+      console.error(err);
+      Alert.alert("Error loading goals", err.message);
+      setLoading(false);
+    }
+  );
+
+  return () => unsub();
+}, [authReady, uid]);
+
+useEffect(() => {
+  if (!authReady) return;
+
+  if (!uid) {
+    setPlanningBoards([]);
+    return;
+  }
+
+  return subscribePersonalPlanningBoards(
+    uid,
+    setPlanningBoards,
+    (err) => {
+      console.log("[Goals] planning boards subscription failed", err);
+      setPlanningBoards([]);
+    }
+  );
+}, [authReady, uid]);
+
+useEffect(() => {
+  if (!authReady) return;
+
+  if (!uid) {
+    setActiveGroupMemberships([]);
+    setLoadingGroupMemberships(false);
+    setGroupMembershipsError(false);
+    return;
+  }
+
+  setLoadingGroupMemberships(true);
+  setGroupMembershipsError(false);
+
+  return subscribeMyGroupMemberships(
+    uid,
+    (memberships) => {
+      setActiveGroupMemberships(
+        memberships.filter((membership) => membership.status === "active")
+      );
+      setLoadingGroupMemberships(false);
+      setGroupMembershipsError(false);
+    },
+    (err) => {
+      console.log("[Goals] group memberships subscription failed", err);
+      setActiveGroupMemberships([]);
+      setLoadingGroupMemberships(false);
+      setGroupMembershipsError(true);
+    }
+  );
+}, [authReady, uid]);
+
+useEffect(() => {
+  if (!authReady) return;
+
+  if (!uid) {
+    setAssignedSharedGoals([]);
+    return;
+  }
+
+  const assignedById = new Map<string, Goal>();
+  let childUnsubs: Array<() => void> = [];
+
+  const emit = () => {
+    setAssignedSharedGoals(Array.from(assignedById.values()));
+  };
+
+  const cleanupChildren = () => {
+    childUnsubs.forEach((unsub) => unsub());
+    childUnsubs = [];
+    assignedById.clear();
+    emit();
+  };
+
+  activeGroupMemberships.forEach((membership) => {
+          const groupId = membership.groupId;
+          const groupName = membership.groupName ?? null;
+
+          const sharedGoalsQuery = query(
+            collection(db, "groups", groupId, "sharedGoals"),
+            where("status", "==", "active")
+          );
+
+          const unsubSharedGoals = onSnapshot(sharedGoalsQuery, (snap) => {
+            snap.docs.forEach((sharedGoalDoc) => {
+              const sharedData = sharedGoalDoc.data();
+              const goalId = sharedGoalDoc.id;
+
+              if (sharedData.ownerUserId === uid) {
+                return;
+              }
+
+              const assignedSubtasksQuery = query(
+                collection(db, "goals", goalId, "subtasks"),
+                where("assignedToUid", "==", uid),
+                limit(1)
+              );
+
+              const unsubAssignedSubtasks = onSnapshot(
+                assignedSubtasksQuery,
+                (assignedSnap) => {
+                  if (assignedSnap.empty) {
+                    assignedById.delete(goalId);
+                    emit();
+                    return;
+                  }
+
+                  const goalStatus =
+                    sharedData.goalStatus === "paused" ||
+                    sharedData.goalStatus === "completed"
+                      ? sharedData.goalStatus
+                      : "active";
+
+                  assignedById.set(goalId, {
+                    id: goalId,
+                    userId: sharedData.ownerUserId ?? "",
+                    title: sharedData.goalTitle ?? "Shared goal",
+                    description: sharedData.goalDescription ?? null,
+                    metricType: sharedData.metricType ?? "none",
+                    metricUnit: sharedData.metricUnit ?? null,
+                    metricTargetValue:
+                      typeof sharedData.metricTargetValue === "number"
+                        ? sharedData.metricTargetValue
+                        : null,
+                    currentMetricValue:
+                      typeof sharedData.currentMetricValue === "number"
+                        ? sharedData.currentMetricValue
+                        : null,
+                    progressPercentage:
+                      typeof sharedData.progressPercentage === "number"
+                        ? sharedData.progressPercentage
+                        : 0,
+                    status: goalStatus,
+                    completedAtMs:
+                      typeof sharedData.completedAtMs === "number"
+                        ? sharedData.completedAtMs
+                        : null,
+                    createdAtMs:
+                      typeof sharedData.sharedAtMs === "number"
+                        ? sharedData.sharedAtMs
+                        : 0,
+                    visibility: "group_shared",
+                    sharedGroupIds: [groupId],
+                    sharedGroupId: groupId,
+                    sharedGroupName: groupName,
+                    sharedAccessRole: "assigned_member",
+                  });
+
+                  emit();
+                }
+              );
+
+              childUnsubs.push(unsubAssignedSubtasks);
+            });
+          });
+
+          childUnsubs.push(unsubSharedGoals);
+        });
+
+  return () => {
+    cleanupChildren();
+  };
+}, [activeGroupMemberships, authReady, uid]);
+
+useEffect(() => {
+  if (!authReady || !uid) {
+    setGroupPlanningBoards([]);
+    setLoadingGroupPlanning(false);
+    setGroupPlanningError(null);
+    return;
+  }
+
+  if (loadingGroupMemberships) {
+    setGroupPlanningBoards([]);
+    setLoadingGroupPlanning(true);
+    setGroupPlanningError(null);
+    return;
+  }
+
+  if (activeGroupMemberships.length === 0) {
+    setGroupPlanningBoards([]);
+    setLoadingGroupPlanning(false);
+    setGroupPlanningError(
+      groupMembershipsError ? "Unable to load group boards right now." : null
+    );
+    return;
+  }
+
+  const boardsByGroup = new Map<string, PlanningBoardDoc[]>();
+  const failedGroupIds = new Set<string>();
+  const pendingGroupIds = new Set(
+    activeGroupMemberships.map((membership) => membership.groupId)
+  );
+
+  setGroupPlanningBoards([]);
+  setLoadingGroupPlanning(true);
+  setGroupPlanningError(null);
+
+  const emit = () => {
+    const deduped = new Map<string, GroupPlanningBoard>();
+
+    activeGroupMemberships.forEach((membership) => {
+      const groupName = membership.groupName?.trim() || "Group board";
+      (boardsByGroup.get(membership.groupId) ?? []).forEach((board) => {
+        deduped.set(board.id, { ...board, groupName });
+      });
+    });
+
+    setGroupPlanningBoards(
+      Array.from(deduped.values()).sort(
+        (a, b) =>
+          b.updatedAtMs - a.updatedAtMs ||
+          a.groupName.localeCompare(b.groupName) ||
+          a.title.localeCompare(b.title)
+      )
+    );
+    setLoadingGroupPlanning(pendingGroupIds.size > 0);
+    setGroupPlanningError(
+      failedGroupIds.size > 0
+        ? "Unable to load some group boards right now."
+        : null
+    );
+  };
+
+  const unsubs = activeGroupMemberships.map((membership) =>
+    subscribeGroupPlanningBoards(
+      membership.groupId,
+      (boards) => {
+        boardsByGroup.set(membership.groupId, boards);
+        failedGroupIds.delete(membership.groupId);
+        pendingGroupIds.delete(membership.groupId);
+        emit();
+      },
+      (err) => {
+        console.log("[Goals] group planning boards subscription failed", {
+          groupId: membership.groupId,
+          error: err,
+        });
+        boardsByGroup.delete(membership.groupId);
+        failedGroupIds.add(membership.groupId);
+        pendingGroupIds.delete(membership.groupId);
+        emit();
+      }
+    )
+  );
+
+  return () => {
+    unsubs.forEach((unsub) => unsub());
+  };
+}, [
+  activeGroupMemberships,
+  authReady,
+  groupMembershipsError,
+  loadingGroupMemberships,
+  uid,
+]);
+
+  const resetForm = () => {
+  setTitle("");
+  setDescription("");
+  setMetricType("none");
+  setMetricUnitInput("");
+  setMetricTargetValueInput("");
+};
+
+const createGoal = async () => {
+  if (!user || !uid) {
+    Alert.alert("Sign in required", "Please sign in on the Settings tab first.");
+    return;
+  }
+
+  const formInput: GoalFormInput = {
+    title,
+    description,
+    metricType,
+    metricUnitInput,
+    metricTargetValueInput,
+  };
+
+  let normalized;
+  try {
+    normalized = normalizeGoalInput(formInput);
+  } catch (e: any) {
+    Alert.alert("Invalid goal", e?.message ?? "Please review your goal details.");
+    return;
+  }
+
+  const goalDoc = {
+    userId: uid,
+    ...normalized,
+    createdAtMs: Date.now(),
+    createdAt: serverTimestamp(),
+  };
+
+  try {
+    setSubmitting(true);
+    await addDoc(collection(db, "goals"), goalDoc);
+    resetForm();
+    Alert.alert("Created!", "Your goal was added.");
+  } catch (e: any) {
+    Alert.alert("Create failed", e?.message ?? "Unknown error");
+  } finally {
+    setSubmitting(false);
+  }
+};
+
+const handleCreatePersonalBoard = async () => {
+  if (!uid) {
+    Alert.alert("Sign in required", "Please sign in on the Settings tab first.");
+    return;
+  }
+
+  const title = boardTitleInput.trim();
+  if (!title) {
+    Alert.alert("Board title required", "Please enter a board title.");
+    return;
+  }
+
+  setSavingBoard(true);
+  try {
+    await createPlanningBoard({
+      title,
+      scope: "personal",
+      createdByUid: uid,
+      ownerUid: uid,
+    });
+
+    setBoardTitleInput("");
+    setShowCreateBoardForm(false);
+    Alert.alert("Board created", "Your planning board was created.");
+  } catch (e: any) {
+    Alert.alert("Create board failed", e?.message ?? "Please try again.");
+  } finally {
+    setSavingBoard(false);
+  }
+};
+
+const handleArchivePersonalBoard = (board: PlanningBoardDoc) => {
+  if (!uid || board.ownerUid !== uid) return;
+
+  Alert.alert(
+    "Archive board?",
+    `Archive "${board.title}"? It will no longer appear on this tab.`,
+    [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Archive",
+        style: "destructive",
+        onPress: async () => {
+          setSavingBoard(true);
+          try {
+            await archivePlanningBoard({ boardId: board.id });
+          } catch (e: any) {
+            Alert.alert(
+              "Archive board failed",
+              e?.message ?? "Please try again."
+            );
+          } finally {
+            setSavingBoard(false);
+          }
+        },
+      },
+    ]
+  );
+};
+
+if (!authReady) {
+  return (
+    <View style={styles.center}>
+      <Text style={styles.title}>Planning Hub</Text>
+      <Text style={styles.muted}>Loading account…</Text>
+    </View>
+  );
+}
+  if (!user) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.title}>Planning Hub</Text>
+        
+        <Text style={styles.muted}>
+             UID: {uid ?? "none"}
+          Please sign in on the Settings tab to create and view goals.
+        </Text>
+      </View>
+    );
+  }
+
+
+
+  return (
+    
+    <ScrollView contentContainerStyle={styles.container}>
+      <Text style={styles.title}>Planning Hub</Text>
+
+      {/* Create Goal Card */}
+<View style={[styles.card, styles.createGoalCard]}>
+  <Pressable
+    onPress={() => setShowCreateGoal((prev) => !prev)}
+    style={styles.createGoalHeader}
+  >
+    <View style={styles.createGoalHeaderTextWrap}>
+      <Text style={styles.cardTitle}>Create a goal</Text>
+      <Text style={styles.createGoalSubtitle}>
+        Add a new outcome, habit, or project to track.
+      </Text>
+    </View>
+
+    <Text style={styles.createGoalToggle}>
+      {showCreateGoal ? "Hide" : "+ New"}
+    </Text>
+  </Pressable>
+
+  {showCreateGoal && (
+    <View style={styles.createGoalBody}>
+      <Text style={styles.label}>Title *</Text>
+      <TextInput
+        value={title}
+        onChangeText={setTitle}
+        placeholder="e.g., Read more books"
+        style={styles.input}
+      />
+
+      <Text style={styles.label}>Description</Text>
+      <TextInput
+        value={description}
+        onChangeText={setDescription}
+        placeholder="Optional"
+        style={[styles.input, styles.multiline]}
+        multiline
+      />
+
+      <Text style={styles.label}>Metric type</Text>
+      <View style={styles.rowWrap}>
+        {(["none", "hours", "weight", "pages", "reps", "custom"] as MetricType[]).map((t) => (
+          <Pressable
+            key={t}
+            onPress={() => setMetricType(t)}
+            style={[
+              styles.pill,
+              metricType === t && styles.pillActive,
+            ]}
+          >
+            <Text style={styles.pillText}>{t}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {isMetricEnabled && (
+        <View style={styles.row}>
+          <View style={styles.half}>
+            <Text style={styles.label}>
+              {isWeightMetric
+                ? "Weight unit"
+                : isCustomMetric
+                ? "Custom unit"
+                : "Unit"}
+            </Text>
+
+            {lockedMetricUnitLabel ? (
+              <View style={[styles.input, styles.readOnlyInput]}>
+                <Text style={styles.readOnlyInputText}>{lockedMetricUnitLabel}</Text>
+              </View>
+            ) : isWeightMetric ? (
+              <View style={styles.rowWrap}>
+                {(["lb", "lbs", "kg"] as const).map((unit) => (
+                  <Pressable
+                    key={unit}
+                    onPress={() => setMetricUnitInput(unit)}
+                    style={[
+                      styles.pill,
+                      metricUnitInput === unit && styles.pillActive,
+                    ]}
+                  >
+                    <Text style={styles.pillText}>{unit}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <TextInput
+                value={metricUnitInput}
+                onChangeText={setMetricUnitInput}
+                placeholder="e.g., chapters, miles"
+                style={styles.input}
+              />
+            )}
+          </View>
+
+          <View style={styles.half}>
+            <Text style={styles.label}>Target</Text>
+            <TextInput
+              value={metricTargetValueInput}
+              onChangeText={setMetricTargetValueInput}
+              placeholder="e.g., 50"
+              style={styles.input}
+              keyboardType="numeric"
+            />
+          </View>
+        </View>
+      )}
+
+      <Pressable
+        style={[styles.button, submitting && styles.buttonDisabled]}
+        onPress={createGoal}
+        disabled={submitting}
+      >
+        <Text style={styles.buttonText}>
+          {submitting ? "Creating..." : "Create goal"}
+        </Text>
+      </Pressable>
+
+      <Text style={styles.helper}>
+        Tip: targets unlock automatic progress tracking.
+      </Text>
+    </View>
+  )}
+</View>
+
+      <View style={[styles.card, styles.boardsCard]}>
+        <View style={styles.createGoalHeader}>
+          <View style={styles.createGoalHeaderTextWrap}>
+            <Text style={styles.cardTitle}>Personal Planning</Text>
+            <Text style={styles.muted}>
+              Boards for your goals, milestones, ideas, and next steps.
+            </Text>
+          </View>
+
+          {uid ? (
+            <Pressable
+              style={styles.boardCreateToggle}
+              onPress={() => setShowCreateBoardForm((prev) => !prev)}
+            >
+              <Text style={styles.boardCreateToggleText}>
+                {showCreateBoardForm ? "Hide" : "+ New board"}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        {showCreateBoardForm ? (
+          <View style={styles.boardForm}>
+            <Text style={styles.label}>Board title *</Text>
+            <TextInput
+              value={boardTitleInput}
+              onChangeText={setBoardTitleInput}
+              placeholder="e.g., Personal planning"
+              style={styles.input}
+            />
+
+            <View style={styles.boardFormActions}>
+              <Pressable
+                style={[styles.boardCreateToggle, styles.boardArchiveButton]}
+                onPress={() => {
+                  setBoardTitleInput("");
+                  setShowCreateBoardForm(false);
+                }}
+                disabled={savingBoard}
+              >
+                <Text style={styles.boardArchiveButtonText}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.button, savingBoard && styles.buttonDisabled]}
+                onPress={handleCreatePersonalBoard}
+                disabled={savingBoard}
+              >
+                <Text style={styles.buttonText}>
+                  {savingBoard ? "Saving..." : "Save board"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {planningBoards.length === 0 ? (
+          <View>
+            <Text style={styles.muted}>
+              No boards yet. Boards will help organize goals, milestones, and ideas.
+            </Text>
+            <Text style={styles.muted}>
+              Create a board to organize ideas, next steps, active work, and completed plans.
+            </Text>
+          </View>
+        ) : (
+          planningBoards.map((board) => (
+            <View key={board.id} style={styles.boardPreviewCard}>
+              <Text style={styles.boardPreviewTitle}>{board.title}</Text>
+              <Text style={styles.boardPreviewMeta}>Personal board</Text>
+
+              <View style={styles.boardColumnRow}>
+                {board.columns.map((column) => (
+                  <View key={column.id} style={styles.boardColumnChip}>
+                    <Text style={styles.boardColumnChipText}>
+                      {column.title}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+
+              <Link
+                href={(`/board/${board.id}`) as any}
+                asChild
+              >
+                <Pressable
+                  style={styles.boardOpenButton}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${board.title} personal planning board`}
+                >
+                  <Text style={styles.boardOpenButtonText}>Open board</Text>
+                </Pressable>
+              </Link>
+
+              {board.ownerUid === uid ? (
+                <Pressable
+                  style={styles.boardArchiveButton}
+                  onPress={() => handleArchivePersonalBoard(board)}
+                  disabled={savingBoard}
+                >
+                  <Text style={styles.boardArchiveButtonText}>Archive</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ))
+        )}
+      </View>
+
+      <View style={[styles.card, styles.boardsCard]}>
+        <View style={styles.planningSectionHeader}>
+          <View style={styles.createGoalHeaderTextWrap}>
+            <Text style={styles.cardTitle}>Group Planning</Text>
+            <Text style={styles.muted}>
+              Boards shared through your active groups.
+            </Text>
+          </View>
+          <Text style={styles.boardScopeBadge}>Group boards</Text>
+        </View>
+
+        {loadingGroupPlanning ? (
+          <Text style={styles.muted}>Loading group boards…</Text>
+        ) : null}
+
+        {groupPlanningError ? (
+          <Text style={styles.groupPlanningError}>{groupPlanningError}</Text>
+        ) : null}
+
+        {!loadingGroupPlanning &&
+        !groupPlanningError &&
+        groupPlanningBoards.length === 0 ? (
+          <View>
+            <Text style={styles.muted}>No group planning boards yet.</Text>
+            <Text style={styles.muted}>
+              Boards created in your groups will appear here.
+            </Text>
+          </View>
+        ) : (
+          groupPlanningBoards.map((board) => (
+            <View key={board.id} style={styles.groupBoardPreviewCard}>
+              <Text style={styles.boardPreviewTitle}>{board.title}</Text>
+              <Text style={styles.boardPreviewMeta}>{board.groupName}</Text>
+
+              <View style={styles.boardColumnRow}>
+                {board.columns.map((column) => (
+                  <View key={column.id} style={styles.boardColumnChip}>
+                    <Text style={styles.boardColumnChipText}>
+                      {column.title}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+
+              <Link href={(`/board/${board.id}`) as any} asChild>
+                <Pressable
+                  style={styles.boardOpenButton}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${board.title} board in ${board.groupName}`}
+                >
+                  <Text style={styles.boardOpenButtonText}>Open board</Text>
+                </Pressable>
+              </Link>
+            </View>
+          ))
+        )}
+      </View>
+
+      {/* Goals List */}
+      <View style={styles.listHeader}>
+        <Text style={styles.cardTitle}>Your goals</Text>
+        <Text style={styles.muted}>{loading ? "Loading..." : `${goals.length} total`}</Text>
+      </View>
+
+   {!loading && activeGoals.length === 0 && completedGoals.length === 0 && (
+  <Text style={styles.muted}>No goals yet — create your first one above.</Text>
+)}
+
+{activeGoals.length > 0 && (
+  <>
+    <Text style={styles.sectionHeader}>Active</Text>
+    {activeGoals.map((g) => {
+      const metricLine =
+        g.metricTargetValue != null
+          ? `${g.currentMetricValue ?? 0}/${g.metricTargetValue} ${g.metricUnit ?? ""}`.trim()
+          : "No metric target set";
+
+      return (
+        <Link
+          key={g.id}
+          href={{ pathname: "/goal/[id]", params: { id: g.id } }}
+          asChild
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${g.title} goal, ${g.progressPercentage} percent complete`}
+            style={({ pressed }) => [
+              styles.goalCard,
+              pressed && styles.interactivePressed,
+            ]}
+          >
+            <View style={styles.goalTopRow}>
+              <Text style={styles.goalTitle}>{g.title}</Text>
+              <Text style={styles.badge}>{g.status}</Text>
+            </View>
+
+            {!!g.description && (
+              <Text style={styles.goalDesc}>{g.description}</Text>
+            )}
+            {getSharedGoalLabel(g) ? (
+<Text style={styles.sharedGoalPill}>
+  {getSharedGoalLabel(g)}
+</Text>
+) : null}
+
+            <Text style={styles.goalMeta}>
+              Metric: {g.metricType} • {metricLine}
+            </Text>
+
+            <View style={styles.progressRow}>
+              <View style={styles.progressTrack}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { width: `${g.progressPercentage}%` },
+                  ]}
+                />
+              </View>
+
+              <Text style={styles.progressText}>
+                {g.progressPercentage}%
+              </Text>
+            </View>
+          </Pressable>
+        </Link>
+      );
+    })}
+  </>
+)}
+
+{completedGoals.length > 0 && (
+  <>
+    <Pressable
+      onPress={() => setShowCompleted((prev) => !prev)}
+      accessibilityRole="button"
+      accessibilityLabel={`${showCompleted ? "Hide" : "Show"} completed goals`}
+      accessibilityState={{ expanded: showCompleted }}
+      style={({ pressed }) => [
+        styles.sectionHeaderRow,
+        pressed && styles.interactivePressed,
+      ]}
+    >
+      <Text style={styles.sectionHeader}>Completed</Text>
+      <Text style={styles.sectionToggleText}>
+        {showCompleted ? "Hide" : `Show (${completedGoals.length})`}
+      </Text>
+    </Pressable>
+
+    {showCompleted &&
+  completedGoals.map((g) => {
+    const metricLine =
+      g.metricTargetValue != null
+        ? `${g.currentMetricValue ?? 0}/${g.metricTargetValue} ${g.metricUnit ?? ""}`.trim()
+        : "No metric target set";
+
+    const completedDate = formatCompletedDate(g.completedAtMs);
+
+    return (
+  <Link
+    key={g.id}
+    href={{ pathname: "/goal/[id]", params: { id: g.id } }}
+    asChild
+  >
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open completed ${g.title} goal, ${g.progressPercentage} percent complete`}
+      style={({ pressed }) => [
+        styles.completedGoalCardSingle,
+        pressed && styles.interactivePressed,
+      ]}
+    >
+      <View style={styles.goalTopRow}>
+        <Text style={styles.completedGoalTitleSingle}>{g.title}</Text>
+        <Text style={styles.completedBadgeSingle}>completed</Text>
+      </View>
+
+      {!!g.description && (
+        <Text style={styles.completedGoalDescSingle}>
+          {g.description}
+        </Text>
+      )}
+      {getSharedGoalLabel(g) ? (
+<Text style={styles.sharedGoalPill}>
+  {getSharedGoalLabel(g)}
+</Text>
+) : null}
+
+      {completedDate && (
+        <Text style={styles.completedDateText}>
+          Completed on {completedDate}
+        </Text>
+      )}
+
+      <Text style={styles.completedGoalMetaSingle}>
+        Metric: {g.metricType ?? "none"} • {metricLine}
+      </Text>
+
+      <View style={styles.progressRow}>
+        <View style={styles.completedProgressTrackSingle}>
+          <View
+            style={[
+              styles.completedProgressFillSingle,
+              { width: `${g.progressPercentage}%` },
+            ]}
+          />
+        </View>
+
+        <Text style={styles.completedProgressTextSingle}>
+          {g.progressPercentage}%
+        </Text>
+      </View>
+    </Pressable>
+  </Link>
+);
+  })}
+  </>
+)}
+    </ScrollView>
+  );
+}
+
+const makeStyles = (theme: AppThemeTokens) =>
+  StyleSheet.create({
+    interactivePressed: {
+      opacity: 0.82,
+    },
+    container: {
+  padding: 16,
+  gap: 10,
+  backgroundColor: theme.colors.background,
+  paddingBottom: 120,
+},
+
+center: {
+  flex: 1,
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 20,
+  backgroundColor: theme.colors.background,
+},
+
+title: {
+  fontSize: 28,
+  fontWeight: "900",
+  marginBottom: 2,
+  color: theme.colors.text,
+},
+
+muted: {
+  color: theme.colors.textMuted,
+  fontSize: 13,
+  lineHeight: 18,
+},
+
+card: {
+  backgroundColor: theme.colors.surface,
+  borderRadius: 18,
+  padding: 14,
+  gap: 10,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+  shadowColor: "#000",
+  shadowOpacity: 0.04,
+  shadowRadius: 6,
+  shadowOffset: { width: 0, height: 2 },
+  elevation: 1,
+},
+
+createGoalCard: {
+  padding: 0,
+  overflow: "hidden",
+},
+
+createGoalHeader: {
+  paddingHorizontal: 14,
+  paddingVertical: 14,
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+},
+
+createGoalHeaderTextWrap: {
+  flex: 1,
+},
+
+createGoalSubtitle: {
+  marginTop: 2,
+  fontSize: 12,
+  lineHeight: 17,
+  color: theme.colors.textMuted,
+  fontWeight: "600",
+},
+
+createGoalToggle: {
+  minHeight: 34,
+  paddingHorizontal: 14,
+  paddingVertical: 7,
+  borderRadius: 22,
+  overflow: "hidden",
+  backgroundColor: theme.colors.primary,
+  borderWidth: 1,
+  borderColor: theme.colors.primaryStrong,
+  color: theme.colors.primaryText,
+  fontSize: 12,
+  fontWeight: "900",
+},
+
+createGoalBody: {
+  borderTopWidth: 1,
+  borderTopColor: theme.colors.border,
+  padding: 14,
+  gap: 8,
+},
+
+boardsCard: {
+  gap: 10,
+},
+
+planningSectionHeader: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+},
+
+boardScopeBadge: {
+  fontSize: 11,
+  fontWeight: "900",
+  color: theme.colors.badgeText,
+  backgroundColor: theme.colors.badge,
+  borderWidth: 1,
+  borderColor: theme.colors.primary,
+  borderRadius: 999,
+  overflow: "hidden",
+  paddingHorizontal: 9,
+  paddingVertical: 4,
+},
+
+groupPlanningError: {
+  color: theme.colors.textMuted,
+  fontSize: 13,
+  lineHeight: 18,
+  fontWeight: "700",
+},
+
+boardForm: {
+  paddingTop: 10,
+  borderTopWidth: 1,
+  borderTopColor: theme.colors.border,
+  gap: 8,
+},
+
+boardFormActions: {
+  flexDirection: "row",
+  gap: 10,
+  alignItems: "center",
+},
+
+boardCreateToggle: {
+  minHeight: 34,
+  paddingHorizontal: 12,
+  paddingVertical: 7,
+  borderRadius: 22,
+  alignItems: "center",
+  justifyContent: "center",
+  borderWidth: 1,
+  borderColor: theme.colors.primary,
+  backgroundColor: theme.colors.badge,
+},
+
+boardCreateToggleText: {
+  fontSize: 12,
+  fontWeight: "900",
+  color: theme.colors.badgeText,
+},
+
+boardPreviewCard: {
+  padding: 12,
+  borderRadius: 14,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+  backgroundColor: theme.colors.surfaceMuted,
+  gap: 6,
+},
+
+groupBoardPreviewCard: {
+  padding: 12,
+  borderRadius: 14,
+  borderWidth: 1,
+  borderColor: theme.colors.primary,
+  backgroundColor: theme.colors.surfaceMuted,
+  gap: 6,
+},
+
+boardPreviewTitle: {
+  fontSize: 15,
+  fontWeight: "900",
+  color: theme.colors.text,
+},
+
+boardPreviewMeta: {
+  fontSize: 12,
+  fontWeight: "800",
+  color: theme.colors.textMuted,
+},
+
+boardColumnRow: {
+  flexDirection: "row",
+  flexWrap: "wrap",
+  gap: 8,
+  marginTop: 2,
+},
+
+boardColumnChip: {
+  paddingHorizontal: 9,
+  paddingVertical: 5,
+  borderRadius: 999,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+  backgroundColor: theme.colors.surface,
+},
+
+boardColumnChipText: {
+  fontSize: 11,
+  fontWeight: "900",
+  color: theme.colors.text,
+},
+
+boardOpenButton: {
+  alignSelf: "flex-start",
+  minHeight: 34,
+  paddingHorizontal: 12,
+  paddingVertical: 7,
+  borderRadius: 22,
+  alignItems: "center",
+  justifyContent: "center",
+  borderWidth: 1,
+  borderColor: theme.colors.primary,
+  backgroundColor: theme.colors.badge,
+},
+
+boardOpenButtonText: {
+  fontSize: 12,
+  fontWeight: "900",
+  color: theme.colors.badgeText,
+},
+
+boardArchiveButton: {
+  alignSelf: "flex-start",
+  minHeight: 34,
+  paddingHorizontal: 12,
+  paddingVertical: 7,
+  borderRadius: 22,
+  alignItems: "center",
+  justifyContent: "center",
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+  backgroundColor: theme.colors.surface,
+},
+
+boardArchiveButtonText: {
+  fontSize: 12,
+  fontWeight: "900",
+  color: theme.colors.textMuted,
+},
+
+cardTitle: {
+  color: theme.colors.text,
+  fontSize: 16,
+  fontWeight: "900",
+},
+
+label: {
+  color: theme.colors.textMuted,
+  fontSize: 12,
+  fontWeight: "800",
+  marginTop: 2,
+},
+
+input: {
+  backgroundColor: theme.colors.inputBackground,
+  borderColor: theme.colors.border,
+  borderWidth: 1,
+  borderRadius: 14,
+  paddingHorizontal: 12,
+  paddingVertical: 10,
+  color: theme.colors.text,
+},
+
+multiline: {
+  minHeight: 68,
+  textAlignVertical: "top",
+},
+
+row: {
+  flexDirection: "row",
+  gap: 10,
+},
+
+half: {
+  flex: 1,
+},
+
+rowWrap: {
+  flexDirection: "row",
+  flexWrap: "wrap",
+  gap: 8,
+  alignItems: "center",
+},
+
+pill: {
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+  paddingVertical: 7,
+  paddingHorizontal: 12,
+  borderRadius: 22,
+  backgroundColor: theme.colors.secondaryBackground,
+},
+
+pillActive: {
+  borderColor: theme.colors.primary,
+  backgroundColor: theme.colors.badge,
+},
+
+pillText: {
+  color: theme.colors.text,
+  fontSize: 12,
+  fontWeight: "800",
+},
+
+pillGhost: {
+  display: "none",
+},
+
+pillGhostText: {
+  color: theme.colors.textMuted,
+  fontSize: 12,
+},
+
+button: {
+  backgroundColor: theme.colors.primary,
+  paddingVertical: 12,
+  borderRadius: 18,
+  alignItems: "center",
+  marginTop: 4,
+  borderWidth: 1,
+  borderColor: theme.colors.primaryStrong,
+},
+
+buttonDisabled: {
+  opacity: 0.6,
+},
+
+buttonText: {
+  color: theme.colors.primaryText,
+  fontWeight: "900",
+},
+
+helper: {
+  color: theme.colors.textMuted,
+  fontSize: 12,
+  marginTop: 2,
+  lineHeight: 17,
+},
+
+    listHeader: {
+      marginTop: 10,
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+
+    goalCard: {
+  backgroundColor: theme.colors.surface,
+  borderRadius: 18,
+  paddingVertical: 14,
+  paddingHorizontal: 16,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+  gap: 6,
+  shadowColor: "#000",
+  shadowOpacity: 0.04,
+  shadowRadius: 6,
+  shadowOffset: { width: 0, height: 2 },
+  elevation: 1,
+},
+
+    goalTopRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+    },
+
+    goalTitle: {
+      fontSize: 16,
+      fontWeight: "800",
+      color: theme.colors.text,
+      flex: 1,
+      paddingRight: 10,
+    },
+
+    badge: {
+      fontSize: 11,
+      color: theme.colors.badgeText,
+      backgroundColor: theme.colors.badge,
+      borderWidth: 1,
+      borderColor: theme.colors.primary,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 999,
+      overflow: "hidden",
+      fontWeight: "800",
+    },
+
+    goalDesc: {
+      color: theme.colors.textMuted,
+    },
+
+    goalMeta: {
+      color: theme.colors.textMuted,
+      fontSize: 12,
+    },
+
+    progressRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      marginTop: 4,
+    },
+
+    progressTrack: {
+      flex: 1,
+      height: 10,
+      backgroundColor: theme.colors.surfaceMuted,
+      borderRadius: 999,
+      overflow: "hidden",
+    },
+
+    progressFill: {
+      height: "100%",
+      backgroundColor: theme.colors.primary,
+    },
+
+    progressText: {
+      width: 48,
+      textAlign: "right",
+      fontWeight: "700",
+      color: theme.colors.text,
+    },
+
+    sectionHeader: {
+  fontSize: 16,
+  fontWeight: "900",
+  color: theme.colors.text,
+  marginTop: 4,
+  marginBottom: 0,
+},
+
+    sectionHeaderRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginTop: 8,
+    },
+
+    sectionToggleText: {
+      fontSize: 12,
+      fontWeight: "700",
+      color: theme.colors.textMuted,
+    },
+
+    completedGoalCardSingle: {
+      backgroundColor: theme.colors.surfaceMuted,
+      borderColor: theme.colors.border,
+      borderRadius: 14,
+      padding: 14,
+      borderWidth: 1,
+      gap: 6,
+      opacity: 0.85,
+    },
+
+    completedGoalTitleSingle: {
+      fontSize: 16,
+      fontWeight: "800",
+      color: theme.colors.textMuted,
+      flex: 1,
+      paddingRight: 10,
+    },
+
+    completedBadgeSingle: {
+      fontSize: 11,
+      color: theme.colors.textMuted,
+      backgroundColor: theme.colors.surface,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 999,
+      overflow: "hidden",
+      fontWeight: "800",
+    },
+
+    completedGoalDescSingle: {
+      color: theme.colors.textMuted,
+    },
+
+    completedDateText: {
+      fontSize: 12,
+      color: theme.colors.textMuted,
+      fontWeight: "600",
+    },
+
+    completedGoalMetaSingle: {
+      color: theme.colors.textMuted,
+      fontSize: 12,
+    },
+
+    completedProgressTrackSingle: {
+      flex: 1,
+      height: 10,
+      backgroundColor: theme.colors.surface,
+      borderRadius: 999,
+      overflow: "hidden",
+    },
+
+    completedProgressFillSingle: {
+      height: "100%",
+      backgroundColor: theme.colors.primary,
+      opacity: 0.55,
+    },
+
+    completedProgressTextSingle: {
+      width: 48,
+      textAlign: "right",
+      fontWeight: "700",
+      color: theme.colors.textMuted,
+    },
+
+    readOnlyInput: {
+      justifyContent: "center",
+    },
+
+    readOnlyInputText: {
+      color: theme.colors.text,
+    },
+    sharedGoalPill: {
+  alignSelf: "flex-start",
+  color: theme.colors.primary,
+  backgroundColor: theme.colors.badge,
+  borderColor: theme.colors.primary,
+  borderWidth: 1,
+  borderRadius: 999,
+  overflow: "hidden",
+  paddingHorizontal: 9,
+  paddingVertical: 4,
+  fontSize: 11,
+  fontWeight: "900",
+},
+  });

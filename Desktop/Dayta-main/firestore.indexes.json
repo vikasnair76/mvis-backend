@@ -1,0 +1,68 @@
+{
+  "indexes": [
+    { "collectionGroup": "deliveries", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "state", "order": "ASCENDING" }, { "fieldPath": "claimedAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "plannerGenerationRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "notBeforeAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "plannerGenerationRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "nextAttemptAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "plannerGenerationRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "leaseExpiresAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "plannerScheduleState", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "enabled", "order": "ASCENDING" }, { "fieldPath": "nextRefreshAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "plannerSuggestions", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "expiresAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "plannerSuggestions", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "snoozedUntilMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "groupMemberships", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "uid", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }] },
+    { "collectionGroup": "groupMemberships", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }] },
+    { "collectionGroup": "groupMemberships", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "uid", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }] },
+    { "collectionGroup": "subtasks", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "createdAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "cards", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "ownerUid", "order": "ASCENDING" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "cards", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "planningCalendarEvents", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "ownerUid", "order": "ASCENDING" }, { "fieldPath": "startAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "planningCalendarEvents", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "sortStartMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "groupRoutines", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "groupRoutineOccurrences", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "startAtMs", "order": "ASCENDING" }] },
+    
+    { "collectionGroup": "groupRoutineOccurrences", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "routineId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "startAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "groupRoutineOccurrences", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "routineId", "order": "ASCENDING" }, { "fieldPath": "startAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "groupRoutineOccurrences", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "startAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "groupRoutines", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "updatedAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "assignmentNotificationRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "type", "order": "ASCENDING" }, { "fieldPath": "createdAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "calendarEvents", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "startDayKey", "order": "ASCENDING" }, { "fieldPath": "startMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "calendarEvents", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "startDayKey", "order": "ASCENDING" }, { "fieldPath": "startMs", "order": "ASCENDING" }, { "fieldPath": "endDayKey", "order": "ASCENDING" }] },
+    { "collectionGroup": "calendarRules", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "matchText", "order": "ASCENDING" }] },
+    { "collectionGroup": "completions", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "dayKey", "order": "ASCENDING" }, { "fieldPath": "goalId", "order": "ASCENDING" }] },
+    { "collectionGroup": "completions", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "goalId", "order": "ASCENDING" }, { "fieldPath": "dayKey", "order": "ASCENDING" }] },
+    { "collectionGroup": "completions", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "dayKey", "order": "ASCENDING" }] },
+    { "collectionGroup": "goalCompletions", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "dayKey", "order": "ASCENDING" }] },
+    { "collectionGroup": "goals", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "createdAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "goals", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "createdAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "groupConversations", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "memberUids", "arrayConfig": "CONTAINS" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "groupConversations", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "memberUids", "arrayConfig": "CONTAINS" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "groupDms", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "participantUids", "arrayConfig": "CONTAINS" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "groups", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "category", "order": "ASCENDING" }, { "fieldPath": "discoverable", "order": "ASCENDING" }, { "fieldPath": "isHiddenFromDiscovery", "order": "ASCENDING" }, { "fieldPath": "visibility", "order": "ASCENDING" }, { "fieldPath": "lastActivityAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "groups", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "discoverable", "order": "ASCENDING" }, { "fieldPath": "isHiddenFromDiscovery", "order": "ASCENDING" }, { "fieldPath": "visibility", "order": "ASCENDING" }, { "fieldPath": "lastActivityAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "joinRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "createdAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "mentionNotificationRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "actorUid", "order": "ASCENDING" }, { "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "targetUid", "order": "ASCENDING" }, { "fieldPath": "createdAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "mentionNotificationRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "createdAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "messageNotificationRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "createdAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "routineNotificationRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "createdAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "routineNotificationRequests", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "processingAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "planningBoards", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "archived", "order": "ASCENDING" }, { "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "scope", "order": "ASCENDING" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "planningBoards", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "archived", "order": "ASCENDING" }, { "fieldPath": "ownerUid", "order": "ASCENDING" }, { "fieldPath": "scope", "order": "ASCENDING" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "plannerSuggestions", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "generatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "plannerSuggestions", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "planningCalendarEvents", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "archived", "order": "ASCENDING" }, { "fieldPath": "ownerUid", "order": "ASCENDING" }, { "fieldPath": "scope", "order": "ASCENDING" }, { "fieldPath": "startAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "planningCalendarEvents", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "groupId", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "sortStartMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "scheduledReminders", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "reminderAtMs", "order": "ASCENDING" }] },
+    { "collectionGroup": "scheduleOverrides", "queryScope": "COLLECTION_GROUP", "fields": [{ "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "dayKey", "order": "ASCENDING" }] }
+  ],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "subtasks",
+      "fieldPath": "assignedToUid",
+      "ttl": false,
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "DESCENDING", "queryScope": "COLLECTION" },
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" },
+        { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
+      ]
+    }
+  ]
+}

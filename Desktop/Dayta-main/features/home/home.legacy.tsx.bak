@@ -1,0 +1,1429 @@
+import { router } from "expo-router";
+import { onAuthStateChanged } from "firebase/auth";
+import {
+  collection,
+  collectionGroup,
+  doc,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Animated,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import { DaytaLogo } from "../../components/DayTaLogo";
+import { dayKeyFromMs, getUserTz } from "../../services/dateKey";
+import { auth, db } from "../../services/firebase";
+import {
+  getNowDecision,
+  type HomeTaskItem,
+  type NowDecision,
+} from "../../services/nowDecision";
+import { toggleSubtaskCompletedTx } from "../../services/subtasks";
+import type { AppThemeTokens } from "../../services/theme";
+import { useCurrentAppTheme } from "../../services/useCurrentAppTheme";
+
+
+type GoalLite = {
+  id: string;
+  title: string;
+  userId: string;
+  status?: string;
+};
+
+type SubtaskLite = {
+  id: string;
+  title: string;
+  dueAtMs?: number | null;
+  frequency?: "daily" | "weekly" | "once" | null;
+  weeklyDay?: number | null;
+  scheduledDayKey?: string | null;
+};
+
+export default function HomeScreen() {
+  const { theme } = useCurrentAppTheme();
+  const styles = useMemo(() => makeStyles(theme), [theme]);
+
+  const [items, setItems] = useState<HomeTaskItem[]>([]);
+const [authHydrated, setAuthHydrated] = useState(false);
+const [homeHydrated, setHomeHydrated] = useState(false);
+
+  const [completedTodayKeys, setCompletedTodayKeys] = useState<Set<string>>(
+  new Set()
+);
+
+  const [pendingCompleteId, setPendingCompleteId] = useState<string | null>(null);
+
+  const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
+
+  const homeOpacity = useRef(new Animated.Value(0)).current;
+const homeTranslateY = useRef(new Animated.Value(10)).current; 
+
+  useEffect(() => {
+    //const uid = auth.currentUser?.uid;
+
+if (!uid) {
+  setItems([]);
+  setCompletedTodayKeys(new Set());
+  setHomeHydrated(true);
+  return;
+}
+
+setHomeHydrated(false);
+
+    const goalsQuery = query(
+      collection(db, "goals"),
+      where("userId", "==", uid),
+      where("status", "==", "active")
+    );
+
+    const subtaskUnsubs: Array<() => void> = [];
+
+    const unsubGoals = onSnapshot(
+      goalsQuery,
+      (goalSnap) => {
+        subtaskUnsubs.forEach((unsub) => unsub());
+        subtaskUnsubs.length = 0;
+
+        const goals: GoalLite[] = goalSnap.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...(docSnap.data() as Omit<GoalLite, "id">),
+        }));
+
+     if (goals.length === 0) {
+  setItems([]);
+  setCompletedTodayKeys(new Set());
+  setHomeHydrated(true);
+  return;
+}
+
+        const byGoal: Record<string, HomeTaskItem[]> = {};
+
+        goals.forEach((goal) => {
+          const subtaskRef = collection(db, "goals", goal.id, "subtasks");
+
+          const unsubSubtasks = onSnapshot(subtaskRef, (subtaskSnap) => {
+            const nowMs = Date.now();
+            const tz = getUserTz();
+            const todayKey = dayKeyFromMs(nowMs, tz);
+
+            const goalItems: HomeTaskItem[] = subtaskSnap.docs
+              .map((docSnap) => {
+                const s = {
+                  id: docSnap.id,
+                  ...(docSnap.data() as Omit<SubtaskLite, "id">),
+                };
+
+                return {
+                  goalId: goal.id,
+                  subtaskId: s.id,
+                  goalTitle: goal.title,
+                  title: s.title,
+                  dueAtMs:
+                    typeof s.dueAtMs === "number" ? s.dueAtMs : null,
+                  isCompletedToday: false,
+                  frequency: s.frequency ?? null,
+                  weeklyDay: s.weeklyDay ?? null,
+                  scheduledDayKey: s.scheduledDayKey ?? null,
+                  todayKey,
+                };
+              })
+              .filter((item) => isRelevantForToday(item));
+
+           byGoal[goal.id] = goalItems;
+
+setItems(Object.values(byGoal).flat());
+setHomeHydrated(true);
+
+
+          });
+
+          subtaskUnsubs.push(unsubSubtasks);
+        });
+      },
+     (error) => {
+  console.error("[Home] failed to subscribe to goals", error);
+  setItems([]);
+  setHomeHydrated(true);
+}
+    );
+
+    return () => {
+      unsubGoals();
+      subtaskUnsubs.forEach((unsub) => unsub());
+    };
+  }, [uid]);
+
+  useEffect(() => {
+  if (!uid) {
+    setCompletedTodayKeys(new Set());
+    return;
+  }
+
+  const todayKey = dayKeyFromMs(Date.now(), getUserTz());
+
+  const completionsQuery = query(
+    collectionGroup(db, "completions"),
+    where("userId", "==", uid),
+    where("dayKey", "==", todayKey)
+  );
+
+  const unsub = onSnapshot(
+    completionsQuery,
+    (snap) => {
+      const next = new Set<string>();
+
+      snap.docs.forEach((docSnap) => {
+        const data = docSnap.data() as {
+          goalId?: string;
+          subtaskId?: string;
+        };
+
+        if (typeof data.goalId !== "string") return;
+        if (typeof data.subtaskId !== "string") return;
+
+        next.add(`${data.goalId}:${data.subtaskId}`);
+      });
+
+      setCompletedTodayKeys(next);
+    },
+    (error) => {
+      console.error("[Home] failed to subscribe to today completions", error);
+    }
+  );
+
+  return () => unsub();
+}, [uid]);
+
+ useEffect(() => {
+  const unsub = onAuthStateChanged(auth, (user) => {
+    setUid(user?.uid ?? null);
+    setAuthHydrated(true);
+
+    if (!user) {
+      setItems([]);
+      setCompletedTodayKeys(new Set());
+      setHomeHydrated(true);
+    } else {
+      setHomeHydrated(false);
+    }
+  });
+
+  return () => unsub();
+}, []);
+
+useEffect(() => {
+  const isReady = authHydrated && (!uid || homeHydrated);
+
+  if (!isReady) return;
+
+  homeOpacity.setValue(0);
+  homeTranslateY.setValue(10);
+
+  Animated.parallel([
+    Animated.timing(homeOpacity, {
+      toValue: 1,
+      duration: 220,
+      useNativeDriver: true,
+    }),
+    Animated.timing(homeTranslateY, {
+      toValue: 0,
+      duration: 220,
+      useNativeDriver: true,
+    }),
+  ]).start();
+}, [authHydrated, homeHydrated, uid, homeOpacity, homeTranslateY]);
+
+ const decisionItems = useMemo<HomeTaskItem[]>(() => {
+  return items.map((item) => ({
+    ...item,
+    isCompletedToday: completedTodayKeys.has(
+      `${item.goalId}:${item.subtaskId}`
+    ),
+  }));
+}, [items, completedTodayKeys]);
+
+const decision = useMemo<NowDecision>(() => {
+  return getNowDecision(decisionItems, Date.now());
+}, [decisionItems]);
+
+const todayStats = useMemo(() => {
+  const done = completedTodayKeys.size;
+  const needTime = decisionItems.filter(
+    (item) => !item.isCompletedToday && item.dueAtMs == null
+  ).length;
+
+  const upcoming = decisionItems.filter(
+    (item) =>
+      !item.isCompletedToday &&
+      typeof item.dueAtMs === "number" &&
+      item.dueAtMs > Date.now()
+  ).length;
+
+  return {
+    done,
+    needTime,
+    upcoming,
+  };
+}, [completedTodayKeys, decisionItems]);
+
+const recoveryHint = useMemo(() => {
+  const overdueCount = decisionItems.filter(
+    (item) =>
+      !item.isCompletedToday &&
+      typeof item.dueAtMs === "number" &&
+      item.dueAtMs < Date.now()
+  ).length;
+
+  const needTimeCount = decisionItems.filter(
+    (item) => !item.isCompletedToday && item.dueAtMs == null
+  ).length;
+
+  if (overdueCount > 0) {
+    return {
+      title: `${overdueCount} overdue`,
+      body: "Some tasks are past their planned time.",
+      action: "Review today",
+    };
+  }
+
+  if (needTimeCount > 0) {
+    return {
+      title: `${needTimeCount} need a time`,
+      body: "Some tasks are relevant today but are not scheduled yet.",
+      action: "Plan tasks",
+    };
+  }
+
+  return null;
+}, [decisionItems]);
+
+const upcomingItems = useMemo(() => {
+  return decisionItems
+    .filter(
+      (item) =>
+        !item.isCompletedToday &&
+        typeof item.dueAtMs === "number" &&
+        item.dueAtMs > Date.now()
+    )
+    .sort((a, b) => (a.dueAtMs ?? 0) - (b.dueAtMs ?? 0))
+    .slice(0, 3);
+}, [decisionItems]);
+
+const needsTimeItems = useMemo(() => {
+  return decisionItems
+    .filter((item) => !item.isCompletedToday && item.dueAtMs == null)
+    .slice(0, 3);
+}, [decisionItems]);
+
+const doneTodayItems = useMemo(() => {
+  return decisionItems
+    .filter((item) => item.isCompletedToday)
+    .slice(0, 5);
+}, [decisionItems]);
+
+  const handleCompleteFromHome = async (item: HomeTaskItem) => {
+  const uid = auth.currentUser?.uid;
+
+  if (!uid) {
+    Alert.alert("Sign in required", "Please sign in first.");
+    return;
+  }
+
+  const pendingKey = `${item.goalId}:${item.subtaskId}`;
+  if (pendingCompleteId === pendingKey) return;
+
+  try {
+    setPendingCompleteId(pendingKey);
+
+    const todayKey = dayKeyFromMs(Date.now(), getUserTz());
+
+    await toggleSubtaskCompletedTx(
+      item.goalId,
+      item.subtaskId,
+      todayKey,
+      uid
+    );
+
+    setCompletedTodayKeys((prev) => {
+  const next = new Set(prev);
+
+  if (next.has(pendingKey)) {
+    next.delete(pendingKey);
+  } else {
+    next.add(pendingKey);
+  }
+
+  return next;
+});
+  } catch (e: any) {
+    console.error("[Home] failed to complete task", e);
+    Alert.alert("Couldn’t complete task", e?.message ?? "Unknown error");
+  } finally {
+    setPendingCompleteId(null);
+  }
+};
+
+const handleOpenTaskFromHome = (item: HomeTaskItem) => {
+  router.push({
+    pathname: "/goal/[id]",
+    params: { id: item.goalId },
+  });
+};
+
+const handleQuickPlanFromHome = async (
+  item: HomeTaskItem,
+  option: "today_evening" | "tomorrow_morning"
+) => {
+  try {
+    const targetDate = getQuickPlanDate(option);
+    const scheduledDayKey = dayKeyFromMs(targetDate.getTime(), getUserTz());
+
+    const subtaskRef = doc(
+      db,
+      "goals",
+      item.goalId,
+      "subtasks",
+      item.subtaskId
+    );
+
+    await updateDoc(subtaskRef, {
+      dueAtMs: targetDate.getTime(),
+      scheduledDayKey,
+      updatedAt: serverTimestamp(),
+    });
+
+    setItems((prev) =>
+      prev.map((existing) =>
+        existing.goalId === item.goalId &&
+        existing.subtaskId === item.subtaskId
+          ? {
+              ...existing,
+              dueAtMs: targetDate.getTime(),
+            }
+          : existing
+      )
+    );
+
+    Alert.alert(
+      "Planned",
+      option === "today_evening"
+        ? `"${item.title}" is planned for this evening.`
+        : `"${item.title}" is planned for tomorrow morning.`
+    );
+  } catch (e: any) {
+    console.error("[Home] failed to quick-plan task", e);
+    Alert.alert("Couldn’t plan task", e?.message ?? "Unknown error");
+  }
+};
+
+
+
+const handleOpenPlannerFromHome = (item: HomeTaskItem) => {
+  router.push({
+    pathname: "/goal/[id]",
+    params: { id: item.goalId },
+  });
+};
+
+const isHomeLoading = !authHydrated || (!!uid && !homeHydrated);
+const isSignedOut = authHydrated && !uid;
+
+if (isHomeLoading) {
+  return (
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={styles.container}
+      showsVerticalScrollIndicator={false}
+    >
+      <DaytaLogo
+        variant="full"
+        width={220}
+        textColor={theme.colors.text}
+        accentColor="#EAB308"
+        mutedColor={theme.colors.textMuted}
+        counterColor={theme.colors.surface}
+        showTagline
+      />
+
+      <View style={styles.stateCard}>
+        <Text style={styles.stateEyebrow}>Loading</Text>
+        <Text style={styles.stateTitle}>Getting your day ready…</Text>
+        <Text style={styles.stateBody}>
+          Checking your goals, tasks, and progress for today.
+        </Text>
+      </View>
+    </ScrollView>
+  );
+}
+
+if (isSignedOut) {
+  return (
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={styles.container}
+      showsVerticalScrollIndicator={false}
+    >
+      <DaytaLogo
+        variant="full"
+        width={220}
+        textColor={theme.colors.text}
+        accentColor="#EAB308"
+        mutedColor={theme.colors.textMuted}
+        counterColor={theme.colors.surface}
+        showTagline
+      />
+
+      <View style={styles.stateCard}>
+        <Text style={styles.stateEyebrow}>Welcome</Text>
+        <Text style={styles.stateTitle}>Welcome to Dayta</Text>
+        <Text style={styles.stateBody}>
+          Sign in to see what needs your attention, what’s coming up, and what
+          you’ve already finished.
+        </Text>
+      </View>
+    </ScrollView>
+  );
+}
+
+return (
+  <Animated.ScrollView
+    style={[
+      styles.screen,
+      {
+        opacity: homeOpacity,
+        transform: [{ translateY: homeTranslateY }],
+      },
+    ]}
+    contentContainerStyle={styles.container}
+    showsVerticalScrollIndicator={false}
+  >
+      <DaytaLogo
+        variant="full"
+        width={220}
+        textColor={theme.colors.text}
+        accentColor="#EAB308"
+        mutedColor={theme.colors.textMuted}
+        counterColor={theme.colors.surface}
+        showTagline
+      />
+
+      <Text style={styles.greeting}>Good {getTimeOfDayGreeting()}</Text>
+
+     <View style={[styles.card, getNowCardStyle(decision, styles)]}>
+  <NowDecisionCard
+    decision={decision}
+    styles={styles}
+    pendingCompleteId={pendingCompleteId}
+    onComplete={handleCompleteFromHome}
+    onOpenTask={handleOpenTaskFromHome}
+    onQuickPlan={handleQuickPlanFromHome}
+    onOpenPlanner={handleOpenPlannerFromHome}
+  />
+</View>
+      <View style={styles.statsCard}>
+  <Text style={styles.statsTitle}>Today</Text>
+
+  <View style={styles.statsRow}>
+    <Text style={styles.statText}>{todayStats.upcoming} upcoming</Text>
+    <Text style={styles.statDot}>•</Text>
+    <Text style={styles.statText}>{todayStats.needTime} need time</Text>
+    <Text style={styles.statDot}>•</Text>
+    <Text style={styles.statText}>{todayStats.done} done</Text>
+  </View>
+</View>
+{recoveryHint && (
+  <Pressable
+    onPress={() => router.push("/(tabs)/today")}
+    style={styles.recoveryHintCard}
+  >
+    <View>
+      <Text style={styles.recoveryHintTitle}>{recoveryHint.title}</Text>
+      <Text style={styles.recoveryHintBody}>{recoveryHint.body}</Text>
+    </View>
+
+    <Text style={styles.recoveryHintAction}>{recoveryHint.action}</Text>
+  </Pressable>
+)}
+
+  <View style={styles.section}>
+  <View style={styles.sectionHeaderRow}>
+    <Text style={styles.sectionTitle}>Upcoming</Text>
+    <Text style={styles.sectionMeta}>Next 3</Text>
+  </View>
+
+  {upcomingItems.length === 0 ? (
+    <Text style={styles.sectionEmptyText}>
+      No timed tasks coming up. Add a time to a subtask when you want it to appear here.
+    </Text>
+  ) : (
+    <View style={styles.miniList}>
+      {upcomingItems.map((item) => (
+        <Pressable
+          key={`${item.goalId}:${item.subtaskId}`}
+          onPress={() => handleOpenTaskFromHome(item)}
+          style={styles.miniItem}
+        >
+          <View style={styles.miniItemTextWrap}>
+            <Text style={styles.miniItemTitle}>{item.title}</Text>
+            <Text style={styles.miniItemMeta}>{item.goalTitle}</Text>
+          </View>
+
+          <Text style={styles.miniItemTime}>
+            {formatMiniTime(item.dueAtMs)}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  )}
+</View>
+
+   <View style={styles.section}>
+  <View style={styles.sectionHeaderRow}>
+    <Text style={styles.sectionTitle}>Needs a time</Text>
+    <Text style={styles.sectionMeta}>Top 3</Text>
+  </View>
+
+  {needsTimeItems.length === 0 ? (
+    <Text style={styles.sectionEmptyText}>
+      Nice — every relevant task already has a plan.
+    </Text>
+  ) : (
+    <View style={styles.miniList}>
+      {needsTimeItems.map((item) => (
+        <View
+          key={`${item.goalId}:${item.subtaskId}`}
+          style={styles.needsTimeItem}
+        >
+          <Pressable
+            onPress={() => handleOpenTaskFromHome(item)}
+            style={styles.needsTimeHeader}
+          >
+            <View style={styles.miniItemTextWrap}>
+              <Text style={styles.miniItemTitle}>{item.title}</Text>
+              <Text style={styles.miniItemMeta}>{item.goalTitle}</Text>
+            </View>
+
+            <Text style={styles.needsTimeOpenText}>Open</Text>
+          </Pressable>
+
+          <View style={styles.needsTimeActions}>
+            <Pressable
+              onPress={() => handleQuickPlanFromHome(item, "today_evening")}
+              style={({ pressed }) => [
+  styles.needsTimePill,
+  pressed && styles.pillPressed,
+]}
+            >
+              <Text style={styles.needsTimePillText}>Today evening</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => handleQuickPlanFromHome(item, "tomorrow_morning")}
+              style={({ pressed }) => [
+  styles.needsTimePill,
+  pressed && styles.pillPressed,
+]}
+            >
+              <Text style={styles.needsTimePillText}>Tomorrow morning</Text>
+            </Pressable>
+          </View>
+        </View>
+      ))}
+    </View>
+  )}
+</View>
+
+    <View style={styles.section}>
+  <View style={styles.sectionHeaderRow}>
+    <Text style={styles.sectionTitle}>Done today</Text>
+    <Text style={styles.sectionMeta}>{doneTodayItems.length} shown</Text>
+  </View>
+
+  {doneTodayItems.length === 0 ? (
+    <Text style={styles.sectionEmptyText}>
+      Completed tasks will appear here as you build momentum.
+    </Text>
+  ) : (
+    <View style={styles.miniList}>
+      {doneTodayItems.map((item) => (
+        <Pressable
+          key={`${item.goalId}:${item.subtaskId}`}
+          onPress={() => handleOpenTaskFromHome(item)}
+          style={styles.doneItem}
+        >
+          <Text style={styles.doneCheck}>✓</Text>
+
+          <View style={styles.miniItemTextWrap}>
+            <Text style={styles.doneItemTitle}>{item.title}</Text>
+            <Text style={styles.doneItemMeta}>{item.goalTitle}</Text>
+          </View>
+        </Pressable>
+      ))}
+    </View>
+  )}
+</View>
+
+  </Animated.ScrollView>
+);
+}
+
+function NowDecisionCard({
+  decision,
+  styles,
+  pendingCompleteId,
+  onComplete,
+  onOpenTask,
+  onQuickPlan,
+  onOpenPlanner,
+}: {
+  decision: NowDecision;
+  styles: ReturnType<typeof makeStyles>;
+  pendingCompleteId: string | null;
+  onComplete: (item: HomeTaskItem) => void;
+  onOpenTask: (item: HomeTaskItem) => void;
+  onQuickPlan: (
+    item: HomeTaskItem,
+    option: "today_evening" | "tomorrow_morning"
+  ) => void;
+  onOpenPlanner: (item: HomeTaskItem) => void;
+}) {
+  const meta = getDecisionMeta(decision);
+
+  if (decision.type === "all_clear") {
+    return (
+      <View>
+        <Text style={[styles.decisionEyebrow, meta.eyebrowStyle]}>
+          {meta.label}
+        </Text>
+
+        <Text style={styles.decisionTitle}>You’re all clear 🎉</Text>
+
+<Text style={styles.decisionSub}>
+  Nothing needs your attention right now. You can review goals, plan later tasks, or enjoy the breathing room.
+</Text>
+
+<Pressable
+  onPress={() => router.push("/(tabs)/goals")}
+  style={styles.secondaryActionBtn}
+>
+  <Text style={styles.secondaryActionText}>Review goals</Text>
+</Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <View>
+      <Text style={[styles.decisionEyebrow, meta.eyebrowStyle]}>
+        {meta.label}
+      </Text>
+
+      <Text style={styles.decisionGoal}>{decision.item.goalTitle}</Text>
+
+      <Text style={styles.decisionTitle}>{decision.item.title}</Text>
+
+      <Text style={styles.decisionSub}>
+        {decision.item.dueAtMs
+          ? `${meta.helper} • ${new Date(decision.item.dueAtMs).toLocaleTimeString([], {
+              hour: "numeric",
+              minute: "2-digit",
+            })}`
+          : meta.helper}
+      </Text>
+
+
+
+      {decision.type === "needs_time" && (
+  <View style={styles.quickPlanBox}>
+    <Text style={styles.quickPlanTitle}>Quick plan</Text>
+
+    <View style={styles.quickPlanRow}>
+      <Pressable
+        onPress={() => onQuickPlan(decision.item, "today_evening")}
+        style={({ pressed }) => [
+  styles.quickPlanPill,
+  pressed && styles.pillPressed,
+]}
+      >
+        <Text style={styles.quickPlanPillText}>Today evening</Text>
+      </Pressable>
+
+      <Pressable
+        onPress={() => onQuickPlan(decision.item, "tomorrow_morning")}
+        style={({ pressed }) => [
+  styles.quickPlanPill,
+  pressed && styles.pillPressed,
+]}
+      >
+        <Text style={styles.quickPlanPillText}>Tomorrow morning</Text>
+      </Pressable>
+    </View>
+  </View>
+)}
+
+  <View style={styles.actionRow}>
+  {(decision.type === "overdue" || decision.type === "now") && (
+    <Pressable
+      disabled={
+        pendingCompleteId ===
+        `${decision.item.goalId}:${decision.item.subtaskId}`
+      }
+      onPress={() => onComplete(decision.item)}
+      style={({ pressed }) => [
+  styles.primaryActionBtn,
+  pressed && styles.buttonPressed,
+  pendingCompleteId ===
+    `${decision.item.goalId}:${decision.item.subtaskId}` &&
+    styles.primaryActionBtnDisabled,
+]}
+    >
+      <Text style={styles.primaryActionText}>
+        {pendingCompleteId ===
+        `${decision.item.goalId}:${decision.item.subtaskId}`
+          ? "Completing..."
+          : "Complete"}
+      </Text>
+    </Pressable>
+  )}
+
+ {(decision.type === "next" || decision.type === "needs_time") && (
+  <Pressable
+    onPress={() =>
+      decision.type === "needs_time"
+        ? onOpenPlanner(decision.item)
+        : onOpenTask(decision.item)
+    }
+    style={styles.primaryActionBtn}
+  >
+    <Text style={styles.primaryActionText}>
+      {decision.type === "needs_time" ? "Open planner" : "View task"}
+    </Text>
+  </Pressable>
+)}
+
+ <Pressable
+  onPress={() => onOpenTask(decision.item)}
+  style={styles.secondaryActionBtn}
+>
+  <Text style={styles.secondaryActionText}>Open goal</Text>
+</Pressable>
+</View>
+    </View>
+  );
+}
+
+function getDecisionMeta(decision: NowDecision) {
+  switch (decision.type) {
+    case "overdue":
+      return {
+        label: "Overdue",
+        helper: "This task is past its scheduled time",
+        actionLabel: "Complete",
+        eyebrowStyle: {},
+        buttonStyle: {},
+        buttonTextStyle: {},
+      };
+
+    case "now":
+      return {
+        label: "Now",
+        helper: "This is your current best action",
+        actionLabel: "Complete",
+        eyebrowStyle: {},
+        buttonStyle: {},
+        buttonTextStyle: {},
+      };
+
+    case "next":
+      return {
+        label: "Next",
+        helper: "Coming up today",
+        actionLabel: "View task",
+        eyebrowStyle: {},
+        buttonStyle: {},
+        buttonTextStyle: {},
+      };
+
+    case "needs_time":
+      return {
+        label: "Needs a time",
+        helper: "This task is relevant today but still needs a spot on your plan",
+        actionLabel: "Plan this",
+        eyebrowStyle: {},
+        buttonStyle: {},
+        buttonTextStyle: {},
+      };
+
+    case "all_clear":
+      return {
+        label: "All clear",
+        helper: "No urgent tasks right now",
+        actionLabel: "",
+        eyebrowStyle: {},
+        buttonStyle: {},
+        buttonTextStyle: {},
+      };
+  }
+}
+
+function getNowCardStyle(
+  decision: NowDecision,
+  styles: ReturnType<typeof makeStyles>
+) {
+  switch (decision.type) {
+    case "overdue":
+      return styles.cardOverdue;
+    case "now":
+      return styles.cardNow;
+    case "next":
+      return styles.cardNext;
+    case "needs_time":
+      return styles.cardNeedsTime;
+    case "all_clear":
+      return styles.cardAllClear;
+  }
+}
+
+
+function isRelevantForToday(
+  item: HomeTaskItem & {
+    frequency?: string | null;
+    weeklyDay?: number | null;
+    scheduledDayKey?: string | null;
+    todayKey: string;
+  }
+) {
+  if (item.dueAtMs != null) {
+    return dayKeyFromMs(item.dueAtMs, getUserTz()) === item.todayKey;
+  }
+
+  if (item.scheduledDayKey === item.todayKey) return true;
+  if (item.frequency === "daily") return true;
+
+  return false;
+}
+
+function getTimeOfDayGreeting() {
+  const hour = new Date().getHours();
+
+  if (hour < 12) return "morning";
+  if (hour < 18) return "afternoon";
+  return "evening";
+}
+
+function formatMiniTime(ms: number | null) {
+  if (typeof ms !== "number") return "";
+
+  return new Date(ms).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function getQuickPlanDate(
+  option: "today_evening" | "tomorrow_morning"
+): Date {
+  const now = new Date();
+
+  if (option === "today_evening") {
+    const evening = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      18,
+      0,
+      0,
+      0
+    );
+
+    // If evening already passed, use tomorrow evening.
+    if (evening.getTime() <= now.getTime()) {
+      evening.setDate(evening.getDate() + 1);
+    }
+
+    return evening;
+  }
+
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + 1,
+    9,
+    0,
+    0,
+    0
+  );
+}
+
+const makeStyles = (theme: AppThemeTokens) =>
+  StyleSheet.create({
+    screen: {
+  flex: 1,
+  backgroundColor: theme.colors.background,
+},
+
+container: {
+  flexGrow: 1,
+  backgroundColor: theme.colors.background,
+  padding: 20,
+  paddingTop: 60,
+  paddingBottom: 32,
+  alignItems: "center",
+},
+
+    greeting: {
+  marginTop: 36,
+  fontSize: 20,
+  fontWeight: "800",
+  color: theme.colors.text,
+},
+ card: {
+  marginTop: 24,
+  width: "100%",
+  padding: 18,
+  borderRadius: 18,
+  backgroundColor: theme.colors.surface,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+},
+
+stateCard: {
+  marginTop: 36,
+  width: "100%",
+  padding: 18,
+  borderRadius: 18,
+  backgroundColor: theme.colors.surface,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+},
+
+stateEyebrow: {
+  fontSize: 12,
+  fontWeight: "900",
+  textTransform: "uppercase",
+  letterSpacing: 0.6,
+  color: theme.colors.primary,
+},
+
+stateTitle: {
+  marginTop: 8,
+  fontSize: 22,
+  fontWeight: "900",
+  color: theme.colors.text,
+},
+
+stateBody: {
+  marginTop: 8,
+  fontSize: 14,
+  lineHeight: 20,
+  color: theme.colors.textMuted,
+},
+
+cardTitle: {
+      fontSize: 16,
+      fontWeight: "700",
+      color: theme.colors.text,
+    },
+
+    cardSub: {
+      marginTop: 6,
+      fontSize: 13,
+      color: theme.colors.textMuted,
+    },
+decisionEyebrow: {
+  fontSize: 12,
+  fontWeight: "900",
+  textTransform: "uppercase",
+  color: theme.colors.text,
+  letterSpacing: 0.6,
+},
+
+decisionGoal: {
+  marginTop: 6,
+  fontSize: 13,
+  fontWeight: "800",
+  color: theme.colors.textMuted,
+},
+
+decisionTitle: {
+  marginTop: 4,
+  fontSize: 20,
+  fontWeight: "900",
+  color: theme.colors.text,
+},
+
+decisionSub: {
+  marginTop: 6,
+  fontSize: 13,
+  color: theme.colors.textMuted,
+  lineHeight: 19,
+},
+primaryActionBtn: {
+  marginTop: 14,
+  paddingVertical: 12,
+  borderRadius: 12,
+  alignItems: "center",
+  backgroundColor: theme.colors.primary,
+},
+
+primaryActionText: {
+  fontSize: 14,
+  fontWeight: "800",
+  color: theme.colors.primaryText,
+},
+primaryActionBtnDisabled: {
+  opacity: 0.7,
+},
+actionRow: {
+  marginTop: 14,
+  gap: 8,
+},
+
+secondaryActionBtn: {
+  marginTop: 12,
+  paddingVertical: 11,
+  borderRadius: 12,
+  alignItems: "center",
+  backgroundColor: theme.colors.surface,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+},
+
+secondaryActionText: {
+  fontSize: 14,
+  fontWeight: "800",
+  color: theme.colors.text,
+},
+quickPlanBox: {
+  marginTop: 14,
+  padding: 12,
+  borderRadius: 14,
+  backgroundColor: theme.colors.secondaryBackground,
+  borderWidth: 1,
+  borderColor: theme.colors.secondaryBorder,
+},
+
+quickPlanTitle: {
+  fontSize: 12,
+  fontWeight: "800",
+  color: theme.colors.secondaryText,
+  textTransform: "uppercase",
+  letterSpacing: 0.5,
+},
+
+quickPlanRow: {
+  marginTop: 8,
+  flexDirection: "row",
+  flexWrap: "wrap",
+  gap: 8,
+},
+
+quickPlanPill: {
+  paddingHorizontal: 10,
+  paddingVertical: 7,
+  borderRadius: 999,
+  backgroundColor: theme.colors.surface,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+},
+
+quickPlanPillText: {
+  fontSize: 12,
+  fontWeight: "800",
+  color: theme.colors.text,
+},
+statsCard: {
+  marginTop: 14,
+  width: "100%",
+  padding: 14,
+  borderRadius: 16,
+  backgroundColor: theme.colors.surface,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+},
+
+statsTitle: {
+  fontSize: 13,
+  fontWeight: "800",
+  color: theme.colors.text,
+  textTransform: "uppercase",
+  letterSpacing: 0.6,
+},
+
+statsRow: {
+  marginTop: 8,
+  flexDirection: "row",
+  alignItems: "center",
+  flexWrap: "wrap",
+  gap: 6,
+},
+
+statText: {
+  fontSize: 13,
+  fontWeight: "700",
+  color: theme.colors.textMuted,
+},
+
+statDot: {
+  fontSize: 13,
+  fontWeight: "800",
+  color: theme.colors.primary,
+},
+recoveryHintCard: {
+  marginTop: 14,
+  width: "100%",
+  padding: 14,
+  borderRadius: 16,
+  backgroundColor: theme.colors.warningBackground,
+  borderWidth: 1,
+  borderColor: theme.colors.warningBorder,
+  gap: 10,
+},
+
+recoveryHintTitle: {
+  fontSize: 15,
+  fontWeight: "900",
+  color: theme.colors.warningText,
+},
+
+recoveryHintBody: {
+  marginTop: 4,
+  fontSize: 13,
+  lineHeight: 18,
+  color: theme.colors.warningText,
+},
+
+recoveryHintAction: {
+  alignSelf: "flex-start",
+  marginTop: 4,
+  fontSize: 14,
+  fontWeight: "900",
+  color: theme.colors.warningText,
+  textDecorationLine: "underline",
+},
+section: {
+  marginTop: 14,
+  width: "100%",
+  padding: 14,
+  borderRadius: 16,
+  backgroundColor: theme.colors.surface,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+},
+
+sectionHeaderRow: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+},
+
+sectionTitle: {
+  fontSize: 13,
+  fontWeight: "900",
+  color: theme.colors.text,
+  textTransform: "uppercase",
+  letterSpacing: 0.6,
+},
+
+sectionMeta: {
+  fontSize: 12,
+  fontWeight: "800",
+  color: theme.colors.textMuted,
+},
+
+sectionEmptyText: {
+  marginTop: 10,
+  fontSize: 14,
+  lineHeight: 20,
+  color: theme.colors.textMuted,
+},
+miniList: {
+  marginTop: 10,
+  gap: 8,
+},
+
+miniItem: {
+  paddingVertical: 10,
+  paddingHorizontal: 12,
+  borderRadius: 12,
+  backgroundColor: theme.colors.surfaceMuted,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+},
+
+miniItemTextWrap: {
+  flex: 1,
+},
+
+miniItemTitle: {
+  fontSize: 14,
+  fontWeight: "800",
+  color: theme.colors.text,
+},
+
+miniItemMeta: {
+  marginTop: 4,
+  fontSize: 12,
+  lineHeight: 16,
+  fontWeight: "700",
+  color: theme.colors.textMuted,
+},
+
+miniItemTime: {
+  fontSize: 12,
+  fontWeight: "900",
+  color: theme.colors.primary,
+},
+needsTimeItem: {
+  padding: 12,
+  borderRadius: 14,
+  backgroundColor: theme.colors.secondaryBackground,
+  borderWidth: 1,
+  borderColor: theme.colors.secondaryBorder,
+},
+
+needsTimeHeader: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+},
+
+needsTimeOpenText: {
+  fontSize: 12,
+  fontWeight: "900",
+  color: theme.colors.primary,
+},
+
+needsTimeActions: {
+  marginTop: 10,
+  flexDirection: "row",
+  flexWrap: "wrap",
+  gap: 8,
+},
+
+needsTimePill: {
+  paddingHorizontal: 10,
+  paddingVertical: 7,
+  borderRadius: 999,
+  backgroundColor: theme.colors.surface,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+},
+
+needsTimePillText: {
+  fontSize: 12,
+  fontWeight: "800",
+  color: theme.colors.text,
+},
+doneItem: {
+  paddingVertical: 10,
+  paddingHorizontal: 12,
+  borderRadius: 12,
+  backgroundColor: theme.colors.successBackground,
+  borderWidth: 1,
+  borderColor: theme.colors.successBorder,
+  flexDirection: "row",
+  alignItems: "center",
+  gap: 10,
+},
+
+doneCheck: {
+  width: 22,
+  height: 22,
+  borderRadius: 999,
+  textAlign: "center",
+  textAlignVertical: "center",
+  fontSize: 14,
+  fontWeight: "900",
+  color: theme.colors.successText,
+  backgroundColor: theme.colors.surface,
+  overflow: "hidden",
+},
+
+doneItemTitle: {
+  fontSize: 14,
+  fontWeight: "800",
+  color: theme.colors.successText,
+},
+
+doneItemMeta: {
+  marginTop: 4,
+  fontSize: 12,
+  lineHeight: 16,
+  fontWeight: "700",
+  color: theme.colors.successText,
+},
+cardOverdue: {
+  backgroundColor: theme.colors.dangerBackground,
+  borderColor: theme.colors.dangerBorder,
+},
+
+cardNow: {
+  backgroundColor: theme.colors.successBackground,
+  borderColor: theme.colors.successBorder,
+},
+
+cardNext: {
+  backgroundColor: theme.colors.badge,
+  borderColor: theme.colors.primary,
+},
+
+cardNeedsTime: {
+  backgroundColor: theme.colors.warningBackground,
+  borderColor: theme.colors.warningBorder,
+},
+
+cardAllClear: {
+  backgroundColor: theme.colors.surface,
+  borderColor: theme.colors.border,
+},
+buttonPressed: {
+  opacity: 0.86,
+  transform: [{ scale: 0.98 }],
+},
+
+pillPressed: {
+  opacity: 0.84,
+  transform: [{ scale: 0.98 }],
+},
+  });
+
+const stylesFallbackEyebrow = {
+  fontSize: 12,
+  fontWeight: "800" as const,
+  textTransform: "uppercase" as const,
+};
+
+const stylesFallbackGoal = {
+  marginTop: 6,
+  fontSize: 13,
+  fontWeight: "700" as const,
+};
+
+const stylesFallbackTitle = {
+  marginTop: 4,
+  fontSize: 18,
+  fontWeight: "800" as const,
+};
+
+const stylesFallbackSub = {
+  marginTop: 6,
+  fontSize: 13,
+};
+

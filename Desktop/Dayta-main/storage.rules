@@ -1,0 +1,323 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Firestore-backed authorization requires the cross-service Rules IAM grant.
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function memberDoc(groupId) {
+      return firestore.get(
+        /databases/(default)/documents/groups/$(groupId)/members/$(request.auth.uid)
+      );
+    }
+
+    function isActiveGroupMember(groupId) {
+      return isSignedIn()
+        && firestore.exists(
+          /databases/(default)/documents/groups/$(groupId)/members/$(request.auth.uid)
+        )
+        && memberDoc(groupId).data.status == "active";
+    }
+
+    function canManageBulletinMedia(groupId) {
+      return isActiveGroupMember(groupId)
+        && (
+          memberDoc(groupId).data.role == "owner" ||
+          memberDoc(groupId).data.role == "admin" ||
+          memberDoc(groupId).data.role == "moderator"
+        );
+    }
+
+    function goalDoc(goalId) {
+      return firestore.get(
+        /databases/(default)/documents/goals/$(goalId)
+      );
+    }
+
+    function subtaskDoc(goalId, subtaskId) {
+      return firestore.get(
+        /databases/(default)/documents/goals/$(goalId)/subtasks/$(subtaskId)
+      );
+    }
+
+    function goalExists(goalId) {
+      return firestore.exists(
+        /databases/(default)/documents/goals/$(goalId)
+      );
+    }
+
+    function subtaskExists(goalId, subtaskId) {
+      return firestore.exists(
+        /databases/(default)/documents/goals/$(goalId)/subtasks/$(subtaskId)
+      );
+    }
+
+    function isGoalOwner(goalId) {
+      return isSignedIn()
+        && goalExists(goalId)
+        && goalDoc(goalId).data.userId == request.auth.uid;
+    }
+
+    function canReadGoalMedia(goalId) {
+      return isGoalOwner(goalId)
+        || (
+          isSignedIn()
+          && goalExists(goalId)
+          && goalDoc(goalId).data.visibility == "group_shared"
+          && goalDoc(goalId).data.sharedGroupIds is list
+          && goalDoc(goalId).data.sharedGroupIds.size() > 0
+          && isActiveGroupMember(goalDoc(goalId).data.sharedGroupIds[0])
+        );
+    }
+
+    function canUploadProgressMedia(goalId, subtaskId, uploaderUid) {
+      return isSignedIn()
+        && request.auth.uid == uploaderUid
+        && canReadGoalMedia(goalId)
+        && subtaskExists(goalId, subtaskId)
+        && (
+          isGoalOwner(goalId)
+          || subtaskDoc(goalId, subtaskId).data.assignedToUid == request.auth.uid
+        );
+    }
+
+    function hasValidProgressMediaMetadata(
+      goalId,
+      subtaskId,
+      eventId,
+      attachmentId,
+      uploaderUid
+    ) {
+      return request.resource.metadata.uploaderUid == uploaderUid
+        && request.resource.metadata.goalId == goalId
+        && request.resource.metadata.subtaskId == subtaskId
+        && request.resource.metadata.progressEventId == eventId
+        && request.resource.metadata.attachmentId == attachmentId;
+    }
+
+    function hasValidProgressMediaFile(fileName) {
+      return (
+        (
+          request.resource.contentType == "image/jpeg"
+          && fileName == "original.jpg"
+          ||
+          request.resource.contentType == "image/png"
+          && fileName == "original.png"
+          ||
+          request.resource.contentType == "image/webp"
+          && fileName == "original.webp"
+        )
+        && request.resource.size > 0
+        && request.resource.size <= 10 * 1024 * 1024
+      )
+      || (
+        request.resource.contentType == "image/gif"
+        && fileName == "original.gif"
+        && request.resource.size > 0
+        && request.resource.size <= 15 * 1024 * 1024
+      )
+      || (
+        request.resource.contentType == "video/mp4"
+        && fileName == "original.mp4"
+        && request.resource.size > 0
+        && request.resource.size <= 50 * 1024 * 1024
+      );
+    }
+
+    function uploadSession(sessionId) {
+      return firestore.get(
+        /databases/(default)/documents/mediaUploadSessions/$(sessionId)
+      );
+    }
+
+    function hasActiveUploadSession(sessionId, contextType, uploaderUid) {
+      return isSignedIn()
+        && request.auth.uid == uploaderUid
+        && firestore.exists(/databases/(default)/documents/mediaUploadSessions/$(sessionId))
+        && uploadSession(sessionId).data.uploaderUid == uploaderUid
+        && uploadSession(sessionId).data.contextType == contextType
+        && uploadSession(sessionId).data.status == "active"
+        && uploadSession(sessionId).data.expiresAtMs > request.time.toMillis()
+        && request.resource.metadata.uploadSessionId == sessionId
+        && request.resource.metadata.uploaderUid == uploaderUid
+        && request.resource.metadata.contextType == contextType;
+    }
+
+    function hasContextMetadata(attachmentId) {
+      return request.resource.metadata.attachmentId == attachmentId;
+    }
+
+    match /progressMedia/{uploaderUid}/{goalId}/{subtaskId}/{eventId}/{attachmentId}/{fileName} {
+      allow read: if canReadGoalMedia(goalId);
+
+      allow create: if hasActiveUploadSession(
+          request.resource.metadata.uploadSessionId,
+          "progress",
+          uploaderUid
+        )
+        && resource == null
+        && uploadSession(request.resource.metadata.uploadSessionId).data.goalId == goalId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.subtaskId == subtaskId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.progressEventId == eventId
+        && fileName.matches("^original\\.(jpg|png|webp|gif|mp4)$")
+        && hasValidProgressMediaFile(fileName)
+        && hasValidProgressMediaMetadata(
+          goalId,
+          subtaskId,
+          eventId,
+          attachmentId,
+          uploaderUid
+        );
+
+      allow update: if false;
+
+      allow delete: if isSignedIn()
+        && (
+          isGoalOwner(goalId)
+          || (
+            request.auth.uid == uploaderUid
+            && canReadGoalMedia(goalId)
+          )
+        );
+    }
+
+    match /bulletinMedia/{groupId}/{bulletinId}/{uploaderUid}/{attachmentId}/{fileName} {
+      allow read: if isActiveGroupMember(groupId);
+      allow create: if hasActiveUploadSession(request.resource.metadata.uploadSessionId, "bulletin", uploaderUid)
+        && resource == null
+        && uploadSession(request.resource.metadata.uploadSessionId).data.groupId == groupId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.bulletinId == bulletinId
+        && request.resource.metadata.groupId == groupId
+        && request.resource.metadata.bulletinId == bulletinId
+        && hasContextMetadata(attachmentId)
+        && hasValidProgressMediaFile(fileName);
+      allow update: if false;
+      allow delete: if request.auth.uid == uploaderUid && isActiveGroupMember(groupId);
+    }
+
+    match /bulletinCommentMedia/{groupId}/{bulletinId}/{commentId}/{uploaderUid}/{attachmentId}/{fileName} {
+      allow read: if isActiveGroupMember(groupId);
+      allow create: if hasActiveUploadSession(request.resource.metadata.uploadSessionId, "bulletin_comment", uploaderUid)
+        && resource == null
+        && uploadSession(request.resource.metadata.uploadSessionId).data.groupId == groupId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.bulletinId == bulletinId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.commentId == commentId
+        && request.resource.metadata.groupId == groupId
+        && request.resource.metadata.bulletinId == bulletinId
+        && request.resource.metadata.commentId == commentId
+        && hasContextMetadata(attachmentId)
+        && hasValidProgressMediaFile(fileName);
+      allow update: if false;
+      allow delete: if request.auth.uid == uploaderUid && isActiveGroupMember(groupId);
+    }
+
+    match /sharedGoalCommentMedia/{groupId}/{goalId}/{commentId}/{uploaderUid}/{attachmentId}/{fileName} {
+      allow read: if isActiveGroupMember(groupId);
+      allow create: if hasActiveUploadSession(request.resource.metadata.uploadSessionId, "shared_goal_comment", uploaderUid)
+        && resource == null
+        && uploadSession(request.resource.metadata.uploadSessionId).data.groupId == groupId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.goalId == goalId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.commentId == commentId
+        && request.resource.metadata.groupId == groupId
+        && request.resource.metadata.goalId == goalId
+        && request.resource.metadata.commentId == commentId
+        && hasContextMetadata(attachmentId)
+        && hasValidProgressMediaFile(fileName);
+      allow update: if false;
+      allow delete: if request.auth.uid == uploaderUid && isActiveGroupMember(groupId);
+    }
+
+    match /groupDmMedia/{groupId}/{dmId}/{messageId}/{uploaderUid}/{attachmentId}/{fileName} {
+      allow read: if isActiveGroupMember(groupId)
+        && firestore.exists(/databases/(default)/documents/groupDms/$(dmId))
+        && request.auth.uid in firestore.get(/databases/(default)/documents/groupDms/$(dmId)).data.participantUids;
+      allow create: if hasActiveUploadSession(request.resource.metadata.uploadSessionId, "group_dm_message", uploaderUid)
+        && resource == null
+        && uploadSession(request.resource.metadata.uploadSessionId).data.groupId == groupId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.dmId == dmId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.messageId == messageId
+        && request.resource.metadata.groupId == groupId
+        && request.resource.metadata.dmId == dmId
+        && request.resource.metadata.messageId == messageId
+        && hasContextMetadata(attachmentId)
+        && hasValidProgressMediaFile(fileName);
+      allow update: if false;
+      allow delete: if request.auth.uid == uploaderUid
+        && isActiveGroupMember(groupId)
+        && firestore.exists(/databases/(default)/documents/groupDms/$(dmId))
+        && request.auth.uid in firestore.get(/databases/(default)/documents/groupDms/$(dmId)).data.participantUids;
+    }
+
+    match /groupConversationMedia/{groupId}/{conversationId}/{messageId}/{uploaderUid}/{attachmentId}/{fileName} {
+      allow read: if isActiveGroupMember(groupId)
+        && firestore.exists(/databases/(default)/documents/groupConversations/$(conversationId))
+        && request.auth.uid in firestore.get(/databases/(default)/documents/groupConversations/$(conversationId)).data.memberUids;
+      allow create: if hasActiveUploadSession(request.resource.metadata.uploadSessionId, "group_conversation_message", uploaderUid)
+        && resource == null
+        && uploadSession(request.resource.metadata.uploadSessionId).data.groupId == groupId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.conversationId == conversationId
+        && uploadSession(request.resource.metadata.uploadSessionId).data.messageId == messageId
+        && request.resource.metadata.groupId == groupId
+        && request.resource.metadata.conversationId == conversationId
+        && request.resource.metadata.messageId == messageId
+        && hasContextMetadata(attachmentId)
+        && hasValidProgressMediaFile(fileName);
+      allow update: if false;
+      allow delete: if request.auth.uid == uploaderUid
+        && isActiveGroupMember(groupId)
+        && firestore.exists(/databases/(default)/documents/groupConversations/$(conversationId))
+        && request.auth.uid in firestore.get(/databases/(default)/documents/groupConversations/$(conversationId)).data.memberUids;
+    }
+
+    match /groups/{groupId}/bulletins/{bulletinId}/images/{fileName} {
+      allow read: if isActiveGroupMember(groupId);
+
+      allow create, update: if false;
+
+      allow delete: if canManageBulletinMedia(groupId);
+    }
+
+    match /feedback/{ownerUid}/{feedbackId}/{attachmentId} {
+      allow read: if false;
+      allow create: if isSignedIn()
+        && request.auth.uid == ownerUid
+        && ownerUid.matches("^[A-Za-z0-9_-]{1,128}$")
+        && feedbackId.matches("^[A-Za-z0-9_-]{1,128}$")
+        && attachmentId.matches("^[A-Za-z0-9_-]{1,128}$")
+        && resource == null
+        && request.resource.size > 0
+        && (
+          request.resource.contentType in [
+            "image/jpeg", "image/png", "image/webp"
+          ]
+          && request.resource.size <= 10 * 1024 * 1024
+          && request.resource.metadata.kind == "image"
+          && request.resource.metadata.durationMs == ""
+          || request.resource.contentType == "video/mp4"
+          && request.resource.size <= 50 * 1024 * 1024
+          && request.resource.metadata.kind == "video"
+          && request.resource.metadata.durationMs.matches("^[1-9][0-9]*$")
+        )
+        && request.resource.metadata.ownerUid == ownerUid
+        && request.resource.metadata.feedbackId == feedbackId
+        && request.resource.metadata.attachmentId == attachmentId
+        && request.resource.metadata.keys().hasOnly([
+          "ownerUid", "feedbackId", "attachmentId", "kind", "sizeBytes",
+          "width", "height", "durationMs", "uploadedAtMs"
+        ])
+        && request.resource.metadata.sizeBytes.matches("^[1-9][0-9]*$")
+        && request.resource.metadata.width.matches("^[1-9][0-9]*$")
+        && request.resource.metadata.height.matches("^[1-9][0-9]*$")
+        && request.resource.metadata.uploadedAtMs.matches("^[1-9][0-9]*$")
+        ;
+      allow update: if false;
+      allow delete: if isSignedIn()
+        && request.auth.uid == ownerUid
+        && !firestore.exists(
+          /databases/(default)/documents/feedbackSubmissions/$(feedbackId)
+        );
+    }
+  }
+}

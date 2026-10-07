@@ -1,0 +1,4908 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function hasValidMediaAttachmentShape(attachment) {
+      return attachment.keys().hasOnly([
+        "id", "type", "storagePath", "downloadUrl", "thumbnailUrl", "externalUrl",
+        "mimeType", "fileName", "sizeBytes", "width", "height", "durationMs",
+        "uploadedByUid", "createdAtMs", "provider", "providerMediaId", "title"
+      ])
+      && attachment.keys().size() == 17
+      && attachment.id is string;
+    }
+
+    function hasValidTwoMediaAttachmentList(data) {
+      return data.attachments is list
+        && data.attachments.size() <= 2
+        && data.attachmentCount == data.attachments.size()
+        && (
+          data.attachments.size() < 2
+          || data.attachments[0].type != "video"
+          || data.attachments[1].type != "video"
+        );
+    }
+
+    function hasValidFourMediaAttachmentList(data) {
+      return data.attachments is list
+        && data.attachments.size() <= 4
+        && data.attachmentCount == data.attachments.size()
+        && (data.attachments.size() < 2 || data.attachments[0].id != data.attachments[1].id)
+        && (data.attachments.size() < 3 || (
+          data.attachments[0].id != data.attachments[2].id
+          && data.attachments[1].id != data.attachments[2].id
+        ))
+        && (data.attachments.size() < 4 || (
+          data.attachments[0].id != data.attachments[3].id
+          && data.attachments[1].id != data.attachments[3].id
+          && data.attachments[2].id != data.attachments[3].id
+        ))
+        && (data.attachments.size() < 2
+          || data.attachments[0].type != "video"
+          || data.attachments[1].type != "video")
+        && (data.attachments.size() < 3
+          || data.attachments[2].type != "video"
+          || (data.attachments[0].type != "video" && data.attachments[1].type != "video"))
+        && (data.attachments.size() < 4
+          || data.attachments[3].type != "video"
+          || (
+            data.attachments[0].type != "video"
+            && data.attachments[1].type != "video"
+            && data.attachments[2].type != "video"
+          ));
+    }
+
+    function hasValidOptionalProfile(data) {
+      return (
+        !("displayName" in data)
+        || data.displayName == null
+        || data.displayName is string
+      )
+      && (
+        !("email" in data)
+        || data.email == null
+        || data.email is string
+      );
+    }
+
+    function hasValidUploadedMediaFields(attachment) {
+      return attachment.type in ["image", "gif", "video"]
+        && attachment.storagePath is string
+        && attachment.downloadUrl is string
+        && attachment.externalUrl == null
+        && attachment.uploadedByUid == request.auth.uid
+        && attachment.provider == null;
+    }
+
+    function hasValidTaskFields(data) {
+      return data.title is string
+        && data.title.size() > 0
+        && data.title.size() <= 160
+        && (
+          !("description" in data)
+          || data.description == null
+          || (data.description is string && data.description.size() <= 1000)
+        )
+        && (
+          !("priority" in data)
+          || data.priority == null
+          || data.priority in ["low", "medium", "high"]
+        )
+        && (
+          !("dueAtMs" in data)
+          || data.dueAtMs == null
+          || data.dueAtMs is number
+        );
+    }
+
+    function hasValidConversationTitle(data) {
+      return data.title is string
+        && data.title.size() > 0
+        && data.title.size() <= 120
+        && (
+          !("subject" in data)
+          || data.subject == null
+          || (data.subject is string && data.subject.size() <= 240)
+      );
+    }
+
+    function canUseThread(data, participantUids) {
+      return signedIn()
+        && request.auth.uid in participantUids
+        && data.groupId is string
+        && isGroupMember(data.groupId)
+        && !exists(
+          /databases/$(database)/documents/groups/$(data.groupId)/blockedUsers/$(request.auth.uid)
+        );
+    }
+
+    function hasStablePlanningOwnership() {
+      return request.resource.data.createdByUid == resource.data.createdByUid
+        && request.resource.data.createdAtMs == resource.data.createdAtMs
+        && (
+          (
+            !("ownerUid" in resource.data)
+            && !("ownerUid" in request.resource.data)
+          )
+          || request.resource.data.ownerUid == resource.data.ownerUid
+        )
+        && (
+          (
+            !("groupId" in resource.data)
+            && !("groupId" in request.resource.data)
+          )
+          || request.resource.data.groupId == resource.data.groupId
+        );
+    }
+
+    function hasValidMessageCreateCore(data) {
+      return data.senderUid == request.auth.uid
+        && data.body is string
+        && data.body.size() <= 2000
+        && (data.body.size() > 0 || data.attachmentCount > 0)
+        && data.createdAtMs is number
+        && data.updatedAtMs is number
+        && data.hiddenByModeration == false
+        && (
+          !("replyTo" in data)
+          || data.replyTo == null
+          || (
+            data.replyTo.messageId is string
+            && data.replyTo.senderUid is string
+            && (
+              !("senderName" in data.replyTo)
+              || data.replyTo.senderName == null
+              || data.replyTo.senderName is string
+            )
+            && data.replyTo.bodyPreview is string
+            && data.replyTo.bodyPreview.size() <= 160
+          )
+        );
+    }
+
+    function hasValidMessageAuthorUpdate() {
+      return resource.data.senderUid == request.auth.uid
+        && resource.data.hiddenByModeration != true
+        && (
+          resource.data.deletedByAuthor != true
+          || request.resource.data.deletedByAuthor == true
+        )
+        && request.resource.data.hiddenByModeration == resource.data.hiddenByModeration
+        && (
+          (
+            !("attachments" in resource.data)
+            && !("attachments" in request.resource.data)
+            && !("attachmentCount" in resource.data)
+            && !("attachmentCount" in request.resource.data)
+          )
+          || (
+            request.resource.data.attachments == resource.data.attachments
+            && request.resource.data.attachmentCount == resource.data.attachmentCount
+          )
+        )
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "body", "deletedByAuthor", "deletedAtMs", "editedAtMs", "editedByUid",
+          "updatedAtMs", "updatedAt"
+        ])
+        && request.resource.data.updatedAtMs is number
+        && (
+          request.resource.data.deletedByAuthor == true
+          || (
+            request.resource.data.body is string
+            && request.resource.data.body.size() > 0
+            && request.resource.data.body.size() <= 2000
+            && request.resource.data.editedByUid == request.auth.uid
+            && request.resource.data.editedAtMs is number
+          )
+        );
+    }
+
+    function hasValidMessageModerationUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "hiddenByModeration", "hiddenAtMs", "hiddenByUid", "hiddenByName",
+        "hiddenReason", "hiddenReportId", "restoredAtMs", "restoredByUid",
+        "restoredByName", "updatedAtMs", "updatedAt"
+      ]);
+    }
+
+    function isGoalOwner(goalId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/goals/$(goalId)) &&
+        get(/databases/$(database)/documents/goals/$(goalId)).data.userId == request.auth.uid;
+    }
+function isGroupMember(groupId) {
+  return signedIn()
+    && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+    && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == "active";
+}
+
+function isGroupOwner(groupId) {
+  return isGroupMember(groupId)
+    && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == "owner";
+}
+
+function isGroupAdmin(groupId) {
+
+
+
+  return isGroupMember(groupId)
+    && (
+      get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == "owner"
+      || get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == "admin"
+    );
+}
+
+
+function isGroupModeratorOrAdmin(groupId) {
+  return isGroupMember(groupId)
+    && (
+      get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == "owner"
+      || get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == "admin"
+      || get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == "moderator"
+    );
+}
+
+function isBlockedFromGroup(groupId, uid) {
+  return exists(
+    /databases/$(database)/documents/groups/$(groupId)/blockedUsers/$(uid)
+  );
+}
+
+function isValidPlanningItemType(value) {
+  return value in [
+    "goal",
+    "milestone",
+    "subtask",
+    "board_card",
+    "calendar_event",
+    "routine",
+    "planner_suggestion"
+  ];
+}
+
+function isValidPlanningRelation(value) {
+  return value in [
+    "belongs_to",
+    "blocks",
+    "depends_on",
+    "related_to",
+    "scheduled_for",
+    "generated_from"
+  ];
+}
+
+function hasValidPlanningLinkShape(data) {
+  return data.id is string
+    && data.sourceType is string
+    && isValidPlanningItemType(data.sourceType)
+    && data.sourceId is string
+    && data.sourceId.size() > 0
+    && data.targetType is string
+    && isValidPlanningItemType(data.targetType)
+    && data.targetId is string
+    && data.targetId.size() > 0
+    && data.relation is string
+    && isValidPlanningRelation(data.relation)
+    && data.createdByUid is string
+    && data.createdAtMs is number
+    && data.updatedAtMs is number
+    && (
+      !("ownerUid" in data)
+      || data.ownerUid == null
+      || data.ownerUid is string
+    )
+    && (
+      !("groupId" in data)
+      || data.groupId == null
+      || data.groupId is string
+    )
+    && (
+      !("archived" in data)
+      || data.archived is bool
+    );
+}
+
+function canReadPlanningData(data) {
+  return signedIn()
+    && (
+      data.get("ownerUid", null) == request.auth.uid
+      || data.createdByUid == request.auth.uid
+      || (
+        data.get("groupId", null) is string
+        && isGroupMember(data.groupId)
+      )
+    );
+}
+
+function canWritePlanningData(data) {
+  return signedIn()
+    && (
+      data.get("ownerUid", null) == request.auth.uid
+      || (
+        data.get("groupId", null) is string
+        && isGroupMember(data.groupId)
+      )
+    );
+}
+
+function isValidPlanningBoardScope(value) {
+  return value in ["personal", "group"];
+}
+
+function isValidPlanningBoardColumnId(value) {
+  return value in [
+    "ideas",
+    "next",
+    "active",
+    "completed",
+    "backlog",
+    "in_progress",
+    "review",
+    "done"
+  ];
+}
+
+function hasValidPlanningBoardShape(data) {
+  return data.id is string
+    && data.title is string
+    && data.title.size() > 0
+    && data.title.size() <= 120
+    && data.scope is string
+    && isValidPlanningBoardScope(data.scope)
+    && data.createdByUid is string
+    && data.createdAtMs is number
+    && data.updatedAtMs is number
+    && data.columns is list
+    && data.columns.size() >= 1
+    && data.columns.size() <= 12
+    && (
+      !("ownerUid" in data)
+      || data.ownerUid == null
+      || data.ownerUid is string
+    )
+    && (
+      !("groupId" in data)
+      || data.groupId == null
+      || data.groupId is string
+    )
+    && (
+      !("archived" in data)
+      || data.archived is bool
+    );
+}
+
+function canManagePlanningBoardData(data) {
+  return signedIn()
+    && (
+      data.get("ownerUid", null) == request.auth.uid
+      || (
+        data.get("groupId", null) is string
+        && isGroupAdmin(data.groupId)
+      )
+    );
+}
+
+function isValidPlanningCalendarEventScope(value) {
+  return value in ["personal", "group"];
+}
+
+function isValidPlanningCalendarEventType(value) {
+  return value in [
+    "personal",
+    "group",
+    "goal",
+    "board",
+    "routine"
+  ];
+}
+
+function isValidPlanningCalendarEventVisibility(value) {
+  return value in ["private", "group"];
+}
+
+function hasValidPlanningCalendarEventShape(data) {
+  return data.id is string
+    && data.title is string
+    && data.title.size() > 0
+    && data.title.size() <= 160
+    && data.scope is string
+    && isValidPlanningCalendarEventScope(data.scope)
+    && data.type is string
+    && isValidPlanningCalendarEventType(data.type)
+    && data.visibility is string
+    && isValidPlanningCalendarEventVisibility(data.visibility)
+    && data.startAtMs is number
+    && data.endAtMs is number
+    && data.endAtMs > data.startAtMs
+    && data.createdByUid is string
+    && data.createdAtMs is number
+    && data.updatedAtMs is number
+    && (
+      !("description" in data)
+      || data.description == null
+      || (
+        data.description is string
+        && data.description.size() <= 1000
+      )
+    )
+    && (
+      !("ownerUid" in data)
+      || data.ownerUid == null
+      || data.ownerUid is string
+    )
+    && (
+      !("groupId" in data)
+      || data.groupId == null
+      || data.groupId is string
+    )
+    && (
+      !("goalId" in data)
+      || data.goalId == null
+      || data.goalId is string
+    )
+    && (
+      !("boardId" in data)
+      || data.boardId == null
+      || data.boardId is string
+    )
+    && (
+      !("routineId" in data)
+      || data.routineId == null
+      || data.routineId is string
+    )
+    && (
+      !("allDay" in data)
+      || data.allDay is bool
+    )
+    && (
+      !("archived" in data)
+      || data.archived is bool
+    );
+}
+
+function isGroupCalendarEventData(data) {
+  return data.scope == "group"
+    && data.type == "group"
+    && data.visibility == "group"
+    && data.groupId is string;
+}
+
+function isRoutineGeneratedCalendarEventData(data) {
+  return isGroupCalendarEventData(data)
+    && "sourceType" in data
+    && "sourceRoutineId" in data
+    && "sourceOccurrenceId" in data
+    && "sourceScheduleFingerprint" in data
+    && data.sourceType == "group_routine"
+    && data.sourceRoutineId is string
+    && data.sourceRoutineId.size() > 0
+    && data.sourceOccurrenceId is string
+    && data.sourceOccurrenceId.size() > 0
+    && data.sourceScheduleFingerprint is string
+    && data.sourceScheduleFingerprint.size() > 0;
+}
+
+function hasValidGroupCalendarSourceShape(data) {
+  return (
+    !("sourceType" in data)
+    && !("sourceRoutineId" in data)
+    && !("sourceOccurrenceId" in data)
+    && !("sourceScheduleFingerprint" in data)
+  ) || isRoutineGeneratedCalendarEventData(data);
+}
+
+function canCreateGroupCalendarEvent(groupId) {
+  return exists(/databases/$(database)/documents/groups/$(groupId))
+    && isGroupMember(groupId)
+    && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+      in ["owner", "admin", "moderator", "member"];
+}
+
+function canManageGroupCalendarEvent(data) {
+  return exists(/databases/$(database)/documents/groups/$(data.groupId))
+    && isGroupMember(data.groupId)
+    && (
+      data.createdByUid == request.auth.uid
+      || get(/databases/$(database)/documents/groups/$(data.groupId)/members/$(request.auth.uid)).data.role
+        in ["owner", "admin", "moderator"]
+    );
+}
+
+function hasValidGroupCalendarEventTiming(data) {
+  return (
+    data.allDay == false
+    && data.startAtMs is number
+    && data.startAtMs > 0
+    && data.endAtMs is number
+    && data.endAtMs > data.startAtMs
+    && data.endAtMs - data.startAtMs <= 7 * 24 * 60 * 60 * 1000
+    && data.startDate == null
+    && data.endDate == null
+    && data.sortStartMs == data.startAtMs
+    && data.sortEndMs == data.endAtMs
+  )
+  || (
+    data.allDay == true
+    && data.startAtMs == null
+    && data.endAtMs == null
+    && data.startDate is string
+    && data.startDate.matches("^\\d{4}-\\d{2}-\\d{2}$")
+    && data.endDate is string
+    && data.endDate.matches("^\\d{4}-\\d{2}-\\d{2}$")
+    && data.endDate > data.startDate
+    && data.sortStartMs is number
+    && data.sortStartMs > 0
+    && data.sortEndMs is number
+    && data.sortEndMs > data.sortStartMs
+    && data.sortEndMs - data.sortStartMs <= 367 * 24 * 60 * 60 * 1000
+  );
+}
+
+function hasValidGroupCalendarEventShape(data) {
+  return data.keys().hasOnly([
+    "id",
+    "scope",
+    "type",
+    "visibility",
+    "groupId",
+    "title",
+    "description",
+    "location",
+    "allDay",
+    "startAtMs",
+    "endAtMs",
+    "startDate",
+    "endDate",
+    "timezone",
+    "sortStartMs",
+    "sortEndMs",
+    "createdByUid",
+    "createdByName",
+    "createdByEmail",
+    "attendeeUids",
+    "status",
+    "cancelledAtMs",
+    "cancelledByUid",
+    "createdAtMs",
+    "updatedAtMs",
+    "createdAt",
+    "updatedAt",
+    "sourceType",
+    "sourceRoutineId",
+    "sourceOccurrenceId",
+    "sourceScheduleFingerprint"
+  ])
+  && isGroupCalendarEventData(data)
+  && data.id is string
+  && data.id.size() > 0
+  && data.groupId.size() > 0
+  && data.title is string
+  && data.title.size() > 0
+  && data.title.size() <= 160
+  && (data.description == null || (data.description is string && data.description.size() <= 2000))
+  && (data.location == null || (data.location is string && data.location.size() <= 240))
+  && data.timezone is string
+  && data.timezone.size() > 0
+  && data.timezone.size() <= 100
+  && data.createdByUid is string
+  && data.createdByUid.size() > 0
+  && (data.createdByName == null || (data.createdByName is string && data.createdByName.size() <= 160))
+  && (data.createdByEmail == null || (data.createdByEmail is string && data.createdByEmail.size() <= 320))
+  && data.attendeeUids is list
+  && data.attendeeUids.size() <= 50
+  && data.status in ["scheduled", "cancelled"]
+  && data.createdAtMs is number
+  && data.createdAtMs > 0
+  && data.updatedAtMs is number
+  && data.updatedAtMs >= data.createdAtMs
+  && hasValidGroupCalendarSourceShape(data)
+  && hasValidGroupCalendarEventTiming(data)
+  && (
+    (
+      data.status == "scheduled"
+      && data.cancelledAtMs == null
+      && data.cancelledByUid == null
+    )
+    || (
+      data.status == "cancelled"
+      && data.cancelledAtMs is number
+      && data.cancelledAtMs > 0
+      && data.cancelledByUid is string
+      && data.cancelledByUid.size() > 0
+    )
+  );
+}
+
+function isActiveGroupRoutineMember(groupId) {
+  return exists(/databases/$(database)/documents/groups/$(groupId))
+    && isGroupMember(groupId);
+}
+
+function canCreateGroupRoutine(groupId) {
+  return isActiveGroupRoutineMember(groupId)
+    && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+      in ["owner", "admin", "moderator", "member"];
+}
+
+function canManageGroupRoutine(data) {
+  return isActiveGroupRoutineMember(data.groupId)
+    && (
+      data.createdByUid == request.auth.uid
+      || get(/databases/$(database)/documents/groups/$(data.groupId)/members/$(request.auth.uid)).data.role
+        in ["owner", "admin", "moderator"]
+    );
+}
+
+function isRoutineWeekday(value) {
+  return value is int && value >= 1 && value <= 7;
+}
+
+function hasCanonicalRoutineWeekdays(values) {
+  return values is list
+    && values.size() >= 1
+    && values.size() <= 7
+    && isRoutineWeekday(values[0])
+    && (values.size() < 2 || (isRoutineWeekday(values[1]) && values[1] > values[0]))
+    && (values.size() < 3 || (isRoutineWeekday(values[2]) && values[2] > values[1]))
+    && (values.size() < 4 || (isRoutineWeekday(values[3]) && values[3] > values[2]))
+    && (values.size() < 5 || (isRoutineWeekday(values[4]) && values[4] > values[3]))
+    && (values.size() < 6 || (isRoutineWeekday(values[5]) && values[5] > values[4]))
+    && (values.size() < 7 || (isRoutineWeekday(values[6]) && values[6] > values[5]));
+}
+
+function hasValidGroupRoutineRecurrence(data) {
+  return data.frequency in ["daily", "weekly", "monthly"]
+    && data.interval is int
+    && data.interval >= 1
+    && data.interval <= 100
+    && (
+      (
+        data.frequency == "daily"
+        && data.weekdays == null
+        && data.monthlyMode == null
+        && data.dayOfMonth == null
+        && data.weekOfMonth == null
+        && data.weekdayOfMonth == null
+      )
+      || (
+        data.frequency == "weekly"
+        && hasCanonicalRoutineWeekdays(data.weekdays)
+        && data.monthlyMode == null
+        && data.dayOfMonth == null
+        && data.weekOfMonth == null
+        && data.weekdayOfMonth == null
+      )
+      || (
+        data.frequency == "monthly"
+        && data.weekdays == null
+        && (
+          (
+            data.monthlyMode == "day_of_month"
+            && data.dayOfMonth is int
+            && data.dayOfMonth >= 1
+            && data.dayOfMonth <= 31
+            && data.weekOfMonth == null
+            && data.weekdayOfMonth == null
+          )
+          || (
+            data.monthlyMode == "nth_weekday"
+            && data.dayOfMonth == null
+            && data.weekOfMonth in [-1, 1, 2, 3, 4]
+            && isRoutineWeekday(data.weekdayOfMonth)
+          )
+        )
+      )
+    );
+}
+
+function hasValidGroupRoutineShape(data) {
+  return data.keys().hasOnly([
+    "id", "groupId", "title", "description", "location", "status",
+    "frequency", "interval", "weekdays", "monthlyMode", "dayOfMonth",
+    "weekOfMonth", "weekdayOfMonth", "localStartTime", "durationMinutes",
+    "timezone", "startDate", "endDate", "nextOccurrenceAtMs",
+    "createdByUid", "createdByName", "createdByEmail", "createdAtMs",
+    "updatedAtMs", "createdAt", "updatedAt", "pausedAtMs", "pausedByUid",
+    "archivedAtMs", "archivedByUid", "participantUids"
+  ])
+  && data.keys().size() == 31
+  && data.id is string && data.id.size() > 0
+  && data.groupId is string && data.groupId.size() > 0
+  && data.title is string && data.title.size() > 0 && data.title.size() <= 120
+  && (data.description == null || (data.description is string && data.description.size() <= 2000))
+  && (data.location == null || (data.location is string && data.location.size() <= 240))
+  && data.status in ["active", "paused", "archived"]
+  && hasValidGroupRoutineRecurrence(data)
+  && data.localStartTime is string
+  && data.localStartTime.matches("^(0\\d|1\\d|2[0-3]):[0-5]\\d$")
+  && (data.durationMinutes == null || (
+    data.durationMinutes is int
+    && data.durationMinutes >= 1
+    && data.durationMinutes <= 10080
+  ))
+  && data.timezone is string && data.timezone.size() > 0 && data.timezone.size() <= 100
+  && data.startDate is string && data.startDate.matches("^\\d{4}-\\d{2}-\\d{2}$")
+  && (data.endDate == null || (
+    data.endDate is string
+    && data.endDate.matches("^\\d{4}-\\d{2}-\\d{2}$")
+    && data.endDate >= data.startDate
+  ))
+  && data.createdByUid is string && data.createdByUid.size() > 0
+  && data.participantUids is list
+  && data.participantUids.size() <= 50
+  && (data.createdByName == null || (data.createdByName is string && data.createdByName.size() <= 160))
+  && (data.createdByEmail == null || (data.createdByEmail is string && data.createdByEmail.size() <= 320))
+  && data.createdAtMs is number && data.createdAtMs > 0
+  && data.updatedAtMs is number && data.updatedAtMs >= data.createdAtMs
+  && (
+    (
+      data.status == "active"
+      && (
+        data.nextOccurrenceAtMs == null
+        || (data.nextOccurrenceAtMs is number && data.nextOccurrenceAtMs > 0)
+      )
+      && data.pausedAtMs == null
+      && data.pausedByUid == null
+      && data.archivedAtMs == null
+      && data.archivedByUid == null
+    )
+    || (
+      data.status == "paused"
+      && data.nextOccurrenceAtMs == null
+      && data.pausedAtMs is number
+      && data.pausedAtMs > 0
+      && data.pausedByUid is string
+      && data.pausedByUid.size() > 0
+      && data.archivedAtMs == null
+      && data.archivedByUid == null
+    )
+    || (
+      data.status == "archived"
+      && data.nextOccurrenceAtMs == null
+      && (
+        (data.pausedAtMs == null && data.pausedByUid == null)
+        || (
+          data.pausedAtMs is number
+          && data.pausedAtMs > 0
+          && data.pausedByUid is string
+          && data.pausedByUid.size() > 0
+        )
+      )
+      && data.archivedAtMs is number
+      && data.archivedAtMs > 0
+      && data.archivedByUid is string
+      && data.archivedByUid.size() > 0
+    )
+  );
+}
+
+function isSharedGoalGroupAdmin(goalId) {
+  return signedIn()
+    && exists(/databases/$(database)/documents/goals/$(goalId))
+    && get(/databases/$(database)/documents/goals/$(goalId)).data.visibility == "group_shared"
+    && get(/databases/$(database)/documents/goals/$(goalId)).data.sharedGroupIds is list
+    && get(/databases/$(database)/documents/goals/$(goalId)).data.sharedGroupIds.size() > 0
+    && isGroupAdmin(get(/databases/$(database)/documents/goals/$(goalId)).data.sharedGroupIds[0]);
+}
+
+function canCreateSharedGoalAssignmentSideEffects(groupId, goalId, targetUid) {
+  return signedIn()
+    && exists(/databases/$(database)/documents/groups/$(groupId)/sharedGoals/$(goalId))
+    && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(targetUid))
+    && get(/databases/$(database)/documents/groups/$(groupId)/members/$(targetUid)).data.status == "active"
+    && (
+      isGroupAdmin(groupId)
+      || isGoalOwner(goalId)
+    );
+}
+
+function canCreatePlanningBoardAssignmentSideEffects(groupId, boardId, cardId, targetUid) {
+  return signedIn()
+    && exists(/databases/$(database)/documents/planningBoards/$(boardId))
+    && get(/databases/$(database)/documents/planningBoards/$(boardId)).data.scope == "group"
+    && get(/databases/$(database)/documents/planningBoards/$(boardId)).data.groupId == groupId
+    && exists(/databases/$(database)/documents/planningBoards/$(boardId)/cards/$(cardId))
+    && get(/databases/$(database)/documents/planningBoards/$(boardId)/cards/$(cardId)).data.assignedToUid == targetUid
+    && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(targetUid))
+    && get(/databases/$(database)/documents/groups/$(groupId)/members/$(targetUid)).data.status == "active"
+    && isGroupModeratorOrAdmin(groupId);
+}
+
+function isAssignmentOnlySubtaskUpdate() {
+  return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+    "assignedToUid",
+    "assignedToName",
+    "assignedToEmail",
+    "assignedByUid",
+    "assignedAtMs",
+    "updatedAt"
+  ]);
+}
+
+function canReadSharedGoal(goalId) {
+  let goalPath =
+    /databases/$(database)/documents/goals/$(goalId);
+
+  return signedIn()
+    && exists(goalPath)
+    && get(goalPath).data.visibility == "group_shared"
+    && get(goalPath).data.sharedGroupIds is list
+    && get(goalPath).data.sharedGroupIds.size() > 0
+    && get(goalPath).data.sharedGroupIds[0] is string
+    && exists(
+      /databases/$(database)/documents/groups/$(get(goalPath).data.sharedGroupIds[0])/sharedGoals/$(goalId)
+    )
+    && isGroupMember(get(goalPath).data.sharedGroupIds[0]);
+}
+
+function canReadGoal(goalId) {
+  let goalPath =
+    /databases/$(database)/documents/goals/$(goalId);
+
+  return signedIn()
+    && exists(goalPath)
+    && (
+      get(goalPath).data.userId == request.auth.uid
+      || canReadSharedGoal(goalId)
+    );
+}
+
+function isAssignedSharedSubtask(goalId, subtaskId) {
+  return signedIn()
+    && canReadSharedGoal(goalId)
+    && exists(/databases/$(database)/documents/goals/$(goalId)/subtasks/$(subtaskId))
+    && get(/databases/$(database)/documents/goals/$(goalId)/subtasks/$(subtaskId)).data.assignedToUid == request.auth.uid;
+}
+
+function isAssignedSubtaskCompletionWrite(goalId, subtaskId, dayKey) {
+  return isAssignedSharedSubtask(goalId, subtaskId)
+    && request.resource.data.goalId == goalId
+    && request.resource.data.subtaskId == subtaskId
+    && request.resource.data.dayKey == dayKey
+    && request.resource.data.userId == request.auth.uid;
+}
+
+function isAssignedGoalProgressRollupUpdate(goalId) {
+  return signedIn()
+    && resource.data.visibility == "group_shared"
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "currentMetricValue",
+      "progressPercentage",
+      "status",
+      "completedAtMs",
+      "lastProgressActorUid",
+      "lastProgressSubtaskId",
+      "updatedAt"
+    ])
+    && request.resource.data.lastProgressActorUid == request.auth.uid
+    && request.resource.data.lastProgressSubtaskId is string
+    && isAssignedSharedSubtask(goalId, request.resource.data.lastProgressSubtaskId);
+}
+
+// Append-only guard for the auto-applied duration idempotency markers.
+//
+// `autoAppliedDurationEventIds` records which calendar events have already
+// contributed metric progress. Dropping an id from that list would make the
+// same event eligible to contribute again, so an assigned member may only
+// grow the list: every existing id must survive, and at most one id may be
+// added per write (the client appends with a single `arrayUnion`).
+function isAutoAppliedMarkerAppendOnly() {
+  let previous = resource.data.get("autoAppliedDurationEventIds", []);
+  let next = request.resource.data.get("autoAppliedDurationEventIds", null);
+
+  return next is list
+    && next.hasAll(previous)
+    && next.size() >= previous.size()
+    && next.size() <= previous.size() + 1
+    && next.size() <= 500;
+}
+
+function isAssignedCompletionSubtaskUpdate(goalId, subtaskId) {
+  return isAssignedSharedSubtask(goalId, subtaskId)
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "firstCompletedAtMs",
+      "autoAppliedDurationEventIds",
+      "updatedAt"
+    ])
+    // Untouched is fine; touched must be a strict append. Deleting the field
+    // counts as touching it, and `get(..., null)` then fails `is list`.
+    && (
+      !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        "autoAppliedDurationEventIds"
+      ])
+      || isAutoAppliedMarkerAppendOnly()
+    );
+}
+
+function isAssignedScheduleSubtaskUpdate(goalId, subtaskId) {
+  return isAssignedSharedSubtask(goalId, subtaskId)
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "dueAtMs",
+      "scheduledDayKey",
+      "updatedAt"
+    ])
+    && (
+      request.resource.data.dueAtMs == null
+      || request.resource.data.dueAtMs is number
+    )
+    && (
+      request.resource.data.scheduledDayKey == null
+      || request.resource.data.scheduledDayKey is string
+    );
+}
+
+function hasValidAssignedScheduleOverrideFields(goalId, subtaskId, dayKey) {
+  return isAssignedSharedSubtask(goalId, subtaskId)
+    && request.resource.data.goalId == goalId
+    && request.resource.data.subtaskId == subtaskId
+    && request.resource.data.dayKey == dayKey
+    && request.resource.data.userId == request.auth.uid
+    && request.resource.data.keys().hasOnly([
+      "goalId",
+      "subtaskId",
+      "dayKey",
+      "userId",
+      "dueAtMs",
+      "isSkipped",
+      "isUnscheduled",
+      "source",
+      "createdAt",
+			"updatedAt",
+			"createdAtMs",
+			"updatedAtMs"
+    ]);
+}
+
+function isAssignedScheduleOverrideUpdate(goalId, subtaskId, dayKey) {
+  return hasValidAssignedScheduleOverrideFields(goalId, subtaskId, dayKey)
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "goalId",
+      "subtaskId",
+      "dayKey",
+      "userId",
+      "dueAtMs",
+      "isSkipped",
+      "isUnscheduled",
+      "source",
+      "createdAt",
+      "updatedAt",
+      "createdAtMs",
+      "updatedAtMs"
+    ]);
+}
+		
+
+    match /goals/{goalId} {
+     allow read: if signedIn()
+  && (
+    resource.data.userId == request.auth.uid
+    || canReadSharedGoal(goalId)
+  );
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+     allow update: if signedIn()
+  && (
+    resource.data.userId == request.auth.uid
+    || isAssignedGoalProgressRollupUpdate(goalId)
+  );
+
+allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+
+match /milestones/{milestoneId} {
+  allow read: if isGoalOwner(goalId) || canReadSharedGoal(goalId);
+
+  allow create: if isGoalOwner(goalId)
+    && request.resource.data.id == milestoneId
+    && request.resource.data.goalId == goalId
+    && request.resource.data.title is string
+    && request.resource.data.title.size() > 0
+    && request.resource.data.title.size() <= 160
+    && request.resource.data.status in [
+      "idea",
+      "backlog",
+      "next",
+      "active",
+      "in_progress",
+      "review",
+      "completed",
+      "archived"
+    ]
+    && (
+      !("priority" in request.resource.data)
+      || request.resource.data.priority == null
+      || request.resource.data.priority in ["low", "medium", "high"]
+    )
+    && request.resource.data.sortOrder is number
+    && request.resource.data.createdByUid == request.auth.uid
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs is number;
+
+  allow update: if isGoalOwner(goalId)
+    && request.resource.data.id == resource.data.id
+    && request.resource.data.goalId == resource.data.goalId
+    && request.resource.data.createdByUid == resource.data.createdByUid
+    && request.resource.data.createdAtMs == resource.data.createdAtMs
+    && request.resource.data.title is string
+    && request.resource.data.title.size() > 0
+    && request.resource.data.title.size() <= 160
+    && request.resource.data.status in [
+      "idea",
+      "backlog",
+      "next",
+      "active",
+      "in_progress",
+      "review",
+      "completed",
+      "archived"
+    ]
+    && (
+      !("priority" in request.resource.data)
+      || request.resource.data.priority == null
+      || request.resource.data.priority in ["low", "medium", "high"]
+    )
+    && request.resource.data.sortOrder is number
+    && request.resource.data.updatedAtMs is number;
+
+  allow delete: if isGoalOwner(goalId);
+}
+
+match /calendarExportHistory/{historyId} {
+  allow create: if isGoalOwner(goalId)
+    && request.resource.data.goalId == goalId
+    && request.resource.data.userId == request.auth.uid;
+
+  allow read: if isGoalOwner(goalId) || canReadSharedGoal(goalId);
+
+  allow update, delete: if isGoalOwner(goalId);
+}
+
+match /subtasks/{subtaskId} {
+  allow read: if canReadGoal(goalId);
+
+allow create, delete: if isGoalOwner(goalId);
+
+allow update: if isGoalOwner(goalId)
+  || (
+    isSharedGoalGroupAdmin(goalId)
+    && isAssignmentOnlySubtaskUpdate()
+    && request.resource.data.assignedByUid == request.auth.uid
+  )
+  || isAssignedCompletionSubtaskUpdate(goalId, subtaskId)
+  || isAssignedScheduleSubtaskUpdate(goalId, subtaskId);
+
+allow update: if signedIn()
+  && request.auth.uid == resource.data.assignedToUid
+  && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+    "sharedCalendarPushByUid",
+    "updatedAt"
+  ])
+&& request.resource.data.sharedCalendarPushByUid[request.auth.uid].status in [
+  "linked",
+  "failed",
+  "removed"
+]
+&& request.resource.data.sharedCalendarPushByUid[request.auth.uid].ownerUid == request.auth.uid
+&& request.resource.data.sharedCalendarPushByUid[request.auth.uid].source == "assigned_shared_subtask"
+&& request.resource.data.sharedCalendarPushByUid[request.auth.uid].goalId == goalId
+&& request.resource.data.sharedCalendarPushByUid[request.auth.uid].subtaskId == subtaskId;
+
+  match /completions/{dayKey} {
+   function hasValidProgressEventMetadata() {
+     return (
+       !("kind" in request.resource.data)
+       || request.resource.data.kind in ["completion", "increment"]
+     )
+     && (
+       !("authorUid" in request.resource.data)
+       || request.resource.data.authorUid == request.auth.uid
+     )
+     && (
+       !("comment" in request.resource.data)
+       || request.resource.data.comment == null
+       || (
+         request.resource.data.comment is string
+         && request.resource.data.comment.size() <= 1000
+       )
+     )
+     && (
+       !("attachments" in request.resource.data)
+       || (
+         request.resource.data.attachments is list
+         && request.resource.data.attachments.size() == 0
+       )
+     )
+     && (
+       !("delta" in request.resource.data)
+       || (
+         request.resource.data.delta is number
+         && request.resource.data.delta > 0
+       )
+     )
+     && (
+       !("previousValue" in request.resource.data)
+       || request.resource.data.previousValue is number
+     )
+     && (
+       !("resultingValue" in request.resource.data)
+       || request.resource.data.resultingValue is number
+     )
+     && (
+       !("targetValue" in request.resource.data)
+       || request.resource.data.targetValue == null
+       || (
+         request.resource.data.targetValue is number
+         && request.resource.data.targetValue > 0
+       )
+     )
+     && (
+       !("reverted" in request.resource.data)
+       || request.resource.data.reverted is bool
+     )
+     && (
+       !("revertedByUid" in request.resource.data)
+       || request.resource.data.revertedByUid == request.auth.uid
+     )
+     && (
+       !("revertedAtMs" in request.resource.data)
+       || request.resource.data.revertedAtMs is number
+     );
+   }
+
+   allow create, update: if (
+     (
+       isGoalOwner(goalId)
+       && request.resource.data.goalId == goalId
+       && request.resource.data.subtaskId == subtaskId
+       && request.resource.data.dayKey == dayKey
+       && request.resource.data.userId == request.auth.uid
+     )
+     || isAssignedSubtaskCompletionWrite(goalId, subtaskId, dayKey)
+   )
+   && hasValidProgressEventMetadata();
+
+    allow read: if canReadGoal(goalId);
+
+allow delete: if isGoalOwner(goalId)
+  || isAssignedSharedSubtask(goalId, subtaskId);
+  }
+
+match /progressEvents/{eventId} {
+  function canWriteProgressEvent() {
+    return isGoalOwner(goalId)
+      || isAssignedSharedSubtask(goalId, subtaskId);
+  }
+
+  function progressImageExtension(mimeType) {
+    return mimeType == "image/jpeg"
+      ? "jpg"
+      : mimeType == "image/png"
+      ? "png"
+      : mimeType == "image/webp"
+      ? "webp"
+      : mimeType == "image/gif"
+      ? "gif"
+      : "";
+  }
+
+  function hasValidProgressImageAttachment(attachment) {
+    return attachment.keys().hasOnly([
+      "id",
+      "type",
+      "storagePath",
+      "downloadUrl",
+      "thumbnailUrl",
+      "externalUrl",
+      "mimeType",
+      "fileName",
+      "sizeBytes",
+      "width",
+      "height",
+      "durationMs",
+      "uploadedByUid",
+      "createdAtMs",
+      "provider",
+      "providerMediaId",
+      "title"
+    ])
+    && attachment.id is string
+    && attachment.id.size() > 0
+    && attachment.id.size() <= 128
+    && attachment.type in ["image", "gif"]
+    && attachment.uploadedByUid == request.auth.uid
+    && (
+      (
+        attachment.type == "image"
+        && attachment.mimeType in [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ]
+        && attachment.sizeBytes <= 10 * 1024 * 1024
+      )
+      ||
+      (
+        attachment.type == "gif"
+        && attachment.mimeType == "image/gif"
+        && attachment.sizeBytes <= 15 * 1024 * 1024
+      )
+    )
+    && attachment.storagePath
+      == "progressMedia/"
+        + request.auth.uid
+        + "/"
+        + goalId
+        + "/"
+        + subtaskId
+        + "/"
+        + eventId
+        + "/"
+        + attachment.id
+        + "/original."
+        + progressImageExtension(attachment.mimeType)
+    && attachment.downloadUrl is string
+    && attachment.downloadUrl.matches("^https://.*")
+    && attachment.sizeBytes is number
+    && attachment.sizeBytes > 0
+    && (
+      attachment.thumbnailUrl == null
+      || (
+        attachment.thumbnailUrl is string
+        && attachment.thumbnailUrl.matches("^https://.*")
+      )
+    )
+    && attachment.externalUrl == null
+    && (
+      attachment.fileName == null
+      || attachment.fileName is string
+    )
+    && (
+      attachment.width == null
+      || (
+        attachment.width is number
+        && attachment.width > 0
+      )
+    )
+    && (
+      attachment.height == null
+      || (
+        attachment.height is number
+        && attachment.height > 0
+      )
+    )
+    && attachment.durationMs == null
+    && attachment.provider == null
+    && attachment.providerMediaId == null
+    && attachment.title == null
+    && (
+      attachment.createdAtMs == null
+      || (
+        attachment.createdAtMs is number
+        && attachment.createdAtMs > 0
+      )
+    );
+  }
+
+  function hasValidProgressVideoLinkAttachment(attachment) {
+    return attachment.keys().hasOnly([
+      "id",
+      "type",
+      "storagePath",
+      "downloadUrl",
+      "thumbnailUrl",
+      "externalUrl",
+      "mimeType",
+      "fileName",
+      "sizeBytes",
+      "width",
+      "height",
+      "durationMs",
+      "uploadedByUid",
+      "createdAtMs",
+      "provider",
+      "providerMediaId",
+      "title"
+    ])
+    && attachment.id is string
+    && attachment.id.size() > 0
+    && attachment.id.size() <= 128
+    && attachment.type == "video_link"
+    && attachment.uploadedByUid == request.auth.uid
+    && attachment.provider == "youtube"
+    && attachment.providerMediaId is string
+    && attachment.providerMediaId.matches("^[A-Za-z0-9_-]{11}$")
+    && attachment.externalUrl
+      == "https://www.youtube.com/watch?v="
+        + attachment.providerMediaId
+    && attachment.thumbnailUrl
+      == "https://i.ytimg.com/vi/"
+        + attachment.providerMediaId
+        + "/hqdefault.jpg"
+    && attachment.title == "YouTube video"
+    && attachment.storagePath == null
+    && attachment.downloadUrl == null
+    && attachment.mimeType == null
+    && attachment.fileName == null
+    && attachment.sizeBytes == null
+    && attachment.width == null
+    && attachment.height == null
+    && attachment.durationMs == null
+    && attachment.createdAtMs is number
+    && attachment.createdAtMs > 0;
+  }
+
+  function hasValidProgressVideoAttachment(attachment) {
+    return attachment.keys().hasOnly([
+      "id",
+      "type",
+      "storagePath",
+      "downloadUrl",
+      "thumbnailUrl",
+      "externalUrl",
+      "mimeType",
+      "fileName",
+      "sizeBytes",
+      "width",
+      "height",
+      "durationMs",
+      "uploadedByUid",
+      "createdAtMs",
+      "provider",
+      "providerMediaId",
+      "title"
+    ])
+    && attachment.id is string
+    && attachment.id.size() > 0
+    && attachment.id.size() <= 128
+    && attachment.type == "video"
+    && attachment.uploadedByUid == request.auth.uid
+    && attachment.mimeType == "video/mp4"
+    && attachment.storagePath
+      == "progressMedia/"
+        + request.auth.uid
+        + "/"
+        + goalId
+        + "/"
+        + subtaskId
+        + "/"
+        + eventId
+        + "/"
+        + attachment.id
+        + "/original.mp4"
+    && attachment.downloadUrl is string
+    && attachment.downloadUrl.matches("^https://.*")
+    && attachment.sizeBytes is number
+    && attachment.sizeBytes > 0
+    && attachment.sizeBytes <= 50 * 1024 * 1024
+    && attachment.durationMs is number
+    && attachment.durationMs > 0
+    && attachment.durationMs <= 30000
+    && attachment.thumbnailUrl == null
+    && attachment.externalUrl == null
+    && (attachment.fileName == null || attachment.fileName is string)
+    && (
+      attachment.width == null
+      || (attachment.width is number && attachment.width > 0)
+    )
+    && (
+      attachment.height == null
+      || (attachment.height is number && attachment.height > 0)
+    )
+    && attachment.provider == null
+    && attachment.providerMediaId == null
+    && attachment.title == null
+    && attachment.createdAtMs is number
+    && attachment.createdAtMs > 0;
+  }
+
+  function hasValidProgressAttachment(attachment) {
+    return attachment.type == "video"
+      ? hasValidProgressVideoAttachment(attachment)
+      : attachment.type == "video_link"
+      ? hasValidProgressVideoLinkAttachment(attachment)
+      : hasValidProgressImageAttachment(attachment);
+  }
+
+  function hasValidProgressImageAttachments(attachments) {
+    return attachments is list
+      && attachments.size() <= 4
+      && (
+        attachments.size() < 1
+        || hasValidProgressAttachment(attachments[0])
+      )
+      && (
+        attachments.size() < 2
+        || (
+          hasValidProgressAttachment(attachments[1])
+          && attachments[1].id != attachments[0].id
+        )
+      )
+      && (
+        attachments.size() < 3
+        || (
+          hasValidProgressAttachment(attachments[2])
+          && attachments[2].id != attachments[0].id
+          && attachments[2].id != attachments[1].id
+        )
+      )
+      && (
+        attachments.size() < 4
+        || (
+          hasValidProgressAttachment(attachments[3])
+          && attachments[3].id != attachments[0].id
+          && attachments[3].id != attachments[1].id
+          && attachments[3].id != attachments[2].id
+        )
+      )
+      && !(
+        attachments.size() > 1
+        && attachments[0].type == "video_link"
+        && attachments[1].type == "video_link"
+      )
+      && !(
+        attachments.size() > 2
+        && (
+          attachments[2].type == "video_link"
+          && (
+            attachments[0].type == "video_link"
+            || attachments[1].type == "video_link"
+          )
+        )
+      )
+      && !(
+        attachments.size() > 3
+        && (
+          attachments[3].type == "video_link"
+          && (
+            attachments[0].type == "video_link"
+            || attachments[1].type == "video_link"
+            || attachments[2].type == "video_link"
+          )
+        )
+      )
+      && !(
+        attachments.size() > 1
+        && attachments[0].type == "video"
+        && attachments[1].type == "video"
+      )
+      && !(
+        attachments.size() > 2
+        && attachments[2].type == "video"
+        && (
+          attachments[0].type == "video"
+          || attachments[1].type == "video"
+        )
+      )
+      && !(
+        attachments.size() > 3
+        && attachments[3].type == "video"
+        && (
+          attachments[0].type == "video"
+          || attachments[1].type == "video"
+          || attachments[2].type == "video"
+        )
+      );
+  }
+
+  function hasValidProgressEventCreateShape() {
+    return request.resource.data.keys().hasOnly([
+      "goalId",
+      "subtaskId",
+      "kind",
+      "authorUid",
+      "authorName",
+      "authorEmail",
+      "dayKey",
+      "delta",
+      "previousValue",
+      "resultingValue",
+      "targetValue",
+      "unit",
+      "metricContributionBefore",
+      "metricContributionAfter",
+      "metricContributionDelta",
+      "metricContributionTarget",
+      "metricUnitSnapshot",
+      "completed",
+      "comment",
+      "attachments",
+      "reverted",
+      "createdAtMs",
+      "updatedAtMs"
+    ])
+    && request.resource.data.goalId == goalId
+    && request.resource.data.subtaskId == subtaskId
+    && request.resource.data.authorUid == request.auth.uid
+    && request.resource.data.kind in ["completion", "increment"]
+    && request.resource.data.dayKey is string
+    && request.resource.data.dayKey.size() == 10
+    && request.resource.data.previousValue is number
+    && request.resource.data.previousValue >= 0
+    && request.resource.data.resultingValue is number
+    && request.resource.data.resultingValue >= 0
+    && request.resource.data.targetValue is number
+    && request.resource.data.targetValue > 0
+    && request.resource.data.completed is bool
+    && hasValidProgressImageAttachments(
+      request.resource.data.attachments
+    )
+    && request.resource.data.reverted == false
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs == request.resource.data.createdAtMs
+    && (
+      request.resource.data.authorName == null
+      || request.resource.data.authorName is string
+    )
+    && (
+      request.resource.data.authorEmail == null
+      || request.resource.data.authorEmail is string
+    )
+    && (
+      request.resource.data.unit == null
+      || request.resource.data.unit is string
+    )
+    && (
+      (
+        !("metricContributionBefore" in request.resource.data)
+        && !("metricContributionAfter" in request.resource.data)
+        && !("metricContributionDelta" in request.resource.data)
+        && !("metricContributionTarget" in request.resource.data)
+        && !("metricUnitSnapshot" in request.resource.data)
+      )
+      ||
+      (
+        request.resource.data.metricContributionBefore is number
+        && request.resource.data.metricContributionBefore >= 0
+        && request.resource.data.metricContributionAfter is number
+        && request.resource.data.metricContributionAfter >= 0
+        && request.resource.data.metricContributionDelta is number
+        && request.resource.data.metricContributionDelta >= 0
+        && request.resource.data.metricContributionDelta
+          >= request.resource.data.metricContributionAfter
+            - request.resource.data.metricContributionBefore
+            - 0.000001
+        && request.resource.data.metricContributionDelta
+          <= request.resource.data.metricContributionAfter
+            - request.resource.data.metricContributionBefore
+            + 0.000001
+        && request.resource.data.metricContributionTarget is number
+        && request.resource.data.metricContributionTarget > 0
+        && request.resource.data.metricContributionAfter
+          <= request.resource.data.metricContributionTarget
+        && (
+          request.resource.data.metricUnitSnapshot == null
+          || (
+            request.resource.data.metricUnitSnapshot is string
+            && request.resource.data.metricUnitSnapshot.size() > 0
+            && request.resource.data.metricUnitSnapshot.size() <= 64
+          )
+        )
+      )
+    )
+    && (
+      !("comment" in request.resource.data)
+      || (
+        request.resource.data.comment is string
+        && request.resource.data.comment.size() > 0
+        && request.resource.data.comment.size() <= 1000
+      )
+    )
+    && (
+      (
+        request.resource.data.kind == "completion"
+        && !("delta" in request.resource.data)
+        && request.resource.data.previousValue == 0
+        && request.resource.data.resultingValue == 1
+        && request.resource.data.targetValue == 1
+        && request.resource.data.completed == true
+      )
+      ||
+      (
+        request.resource.data.kind == "increment"
+        && request.resource.data.delta is number
+        && request.resource.data.delta > 0
+        && request.resource.data.resultingValue
+          == request.resource.data.previousValue + request.resource.data.delta
+        && request.resource.data.resultingValue <= request.resource.data.targetValue
+        && request.resource.data.completed
+          == (
+            request.resource.data.resultingValue
+              >= request.resource.data.targetValue
+          )
+      )
+    );
+  }
+
+  allow create: if canWriteProgressEvent()
+    && hasValidProgressEventCreateShape();
+
+  allow update: if signedIn()
+    && resource.data.kind == "completion"
+    && resource.data.dayKey is string
+    && exists(
+      /databases/$(database)/documents/goals/$(goalId)/subtasks/$(subtaskId)/completions/$(resource.data.dayKey)
+    )
+    && get(
+      /databases/$(database)/documents/goals/$(goalId)/subtasks/$(subtaskId)/completions/$(resource.data.dayKey)
+    ).data.latestProgressEventId == eventId
+    && !existsAfter(
+      /databases/$(database)/documents/goals/$(goalId)/subtasks/$(subtaskId)/completions/$(resource.data.dayKey)
+    )
+    && resource.data.reverted == false
+    && request.resource.data.reverted == true
+    && request.resource.data.revertedByUid == request.auth.uid
+    && request.resource.data.revertedAtMs is number
+    && request.resource.data.updatedAtMs is number
+    && request.resource.data.updatedAtMs
+      == request.resource.data.revertedAtMs
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "reverted",
+      "revertedAtMs",
+      "revertedByUid",
+      "updatedAtMs"
+    ]);
+
+  allow get, list: if canReadGoal(goalId);
+  allow delete: if false;
+}
+
+match /scheduleOverrides/{dayKey} {
+  allow create: if (
+    isGoalOwner(goalId)
+    && request.resource.data.goalId == goalId
+    && request.resource.data.subtaskId == subtaskId
+    && request.resource.data.dayKey == dayKey
+    && request.resource.data.userId == request.auth.uid
+  ) || hasValidAssignedScheduleOverrideFields(goalId, subtaskId, dayKey);
+
+  allow update: if (
+    isGoalOwner(goalId)
+    && request.resource.data.goalId == goalId
+    && request.resource.data.subtaskId == subtaskId
+    && request.resource.data.dayKey == dayKey
+    && request.resource.data.userId == request.auth.uid
+  ) || isAssignedScheduleOverrideUpdate(goalId, subtaskId, dayKey);
+
+  allow read: if isGoalOwner(goalId) || canReadSharedGoal(goalId);
+
+  allow delete: if isGoalOwner(goalId)
+    || (
+      isAssignedSharedSubtask(goalId, subtaskId)
+      && resource.data.userId == request.auth.uid
+    );
+}
+
+match /linkedEventHistory/{historyId} {
+  allow create, update: if isGoalOwner(goalId)
+    && request.resource.data.goalId == goalId
+    && request.resource.data.subtaskId == subtaskId
+    && request.resource.data.userId == request.auth.uid;
+
+  allow read: if isGoalOwner(goalId) || canReadSharedGoal(goalId);
+
+  allow delete: if isGoalOwner(goalId);
+}
+}
+
+      match /goalCompletions/{completionId} {
+        allow create, update: if isGoalOwner(goalId)
+          && request.resource.data.goalId == goalId
+          && request.resource.data.userId == request.auth.uid;
+
+       allow read: if isGoalOwner(goalId) || canReadSharedGoal(goalId);
+
+allow delete: if isGoalOwner(goalId);
+      }
+    }
+
+match /{path=**}/subtasks/{subtaskId} {
+  allow read: if signedIn()
+    && resource.data.assignedToUid == request.auth.uid;
+}
+
+    match /{path=**}/completions/{dayKey} {
+  allow read: if signedIn()
+    && (
+      resource.data.userId == request.auth.uid
+      || canReadSharedGoal(resource.data.goalId)
+    );
+}
+
+    match /{path=**}/goalCompletions/{completionId} {
+  allow read: if signedIn()
+    && (
+      resource.data.userId == request.auth.uid
+      || canReadSharedGoal(resource.data.goalId)
+    );
+}
+
+    match /{path=**}/scheduleOverrides/{dayKey} {
+      allow read: if signedIn()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+
+      match /calendarEvents/{eventId} {
+        allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+      }
+
+      match /integrations/{integrationId} {
+        allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+      }
+		match /calendarRules/{ruleId} {
+  allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+}
+match /settings/{settingId} {
+  function validPlannerPreferences() {
+    return request.resource.data.keys().hasOnly([
+      "enabled",
+      "allowPersonalSuggestions",
+      "allowGroupSuggestions",
+      "notificationsEnabled",
+      "personalNotificationsEnabled",
+      "groupNotificationsEnabled",
+      "conflictNotificationsEnabled",
+      "opportunityNotificationsEnabled",
+      "hiddenSuggestionTypes",
+      "updatedAtMs",
+      "updatedAt"
+    ])
+    && request.resource.data.enabled is bool
+    && request.resource.data.allowPersonalSuggestions is bool
+    && request.resource.data.allowGroupSuggestions is bool
+    && request.resource.data.notificationsEnabled is bool
+    && request.resource.data.personalNotificationsEnabled is bool
+    && request.resource.data.groupNotificationsEnabled is bool
+    && request.resource.data.conflictNotificationsEnabled is bool
+    && request.resource.data.opportunityNotificationsEnabled is bool
+    && request.resource.data.hiddenSuggestionTypes is list
+    && request.resource.data.hiddenSuggestionTypes.size() <= 10
+    && request.resource.data.hiddenSuggestionTypes.hasOnly([
+      "schedule_work",
+      "reschedule_work",
+      "resolve_conflict",
+      "prioritize_work",
+      "split_work",
+      "surface_neglected_work",
+      "move_board_card",
+      "adjust_deadline",
+      "routine_timing",
+      "focus_block"
+    ])
+    && request.resource.data.updatedAtMs is number
+    && request.resource.data.updatedAt == request.time;
+  }
+  allow read: if request.auth != null && request.auth.uid == userId;
+  allow create, update: if request.auth != null
+    && request.auth.uid == userId
+    && (
+      settingId != "planner"
+      || validPlannerPreferences()
+    );
+  allow delete: if request.auth != null
+    && request.auth.uid == userId
+    && settingId != "planner";
+}
+
+match /plannerSuggestions/{suggestionId} {
+  /*
+  function isPlannerOwner() {
+    return signedIn()
+      && request.auth.uid == userId
+      && resource.data.ownerUid == userId;
+  }
+  function plannerTransitionAllowed() {
+    return (
+      resource.data.status == request.resource.data.status
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "viewedAtMs", "updatedAtMs", "updatedAt"
+      ])
+    )
+    || (
+      resource.data.status in ["active", "snoozed"]
+      && request.resource.data.status == "dismissed"
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "status", "dismissedAtMs", "actedAtMs", "dismissalReason",
+        "snoozedUntilMs", "updatedAtMs", "updatedAt"
+      ])
+    )
+    || (
+      resource.data.status == "active"
+      && request.resource.data.status == "snoozed"
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "status", "snoozedUntilMs", "updatedAtMs", "updatedAt"
+      ])
+    )
+    || (
+      resource.data.status == "snoozed"
+      && request.resource.data.status == "active"
+      && request.resource.data.snoozedUntilMs == null
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "status", "snoozedUntilMs", "updatedAtMs", "updatedAt"
+      ])
+    )
+    || (
+      resource.data.status in [
+        "active", "snoozed", "accepted", "dismissed", "expired", "invalidated"
+      ]
+      && request.resource.data.status == "archived"
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "status", "archivedAtMs", "updatedAtMs", "updatedAt"
+      ])
+    );
+  }
+  function plannerLifecycleFieldsValid() {
+    return request.resource.data.updatedAtMs is number
+      && request.resource.data.updatedAt == request.time
+      && (
+        request.resource.data.status != "accepted"
+        || (
+          request.resource.data.acceptedAtMs is number
+          && request.resource.data.actedAtMs
+            == request.resource.data.acceptedAtMs
+          && (
+            resource.data.expiresAtMs == null
+            || resource.data.expiresAtMs > request.time.toMillis()
+          )
+          && (
+            resource.data.status != "snoozed"
+            || resource.data.snoozedUntilMs <= request.time.toMillis()
+          )
+        )
+      )
+      && (
+        request.resource.data.status != "dismissed"
+        || (
+          request.resource.data.dismissedAtMs is number
+          && request.resource.data.actedAtMs
+            == request.resource.data.dismissedAtMs
+          && (
+            request.resource.data.dismissalReason == null
+            || request.resource.data.dismissalReason in [
+              "not_relevant",
+              "already_handled",
+              "bad_timing",
+              "dont_suggest_again",
+              "other"
+            ]
+          )
+        )
+      )
+      && (
+        request.resource.data.status != "snoozed"
+        || (
+          request.resource.data.snoozedUntilMs is number
+          && request.resource.data.snoozedUntilMs > request.time.toMillis()
+          && request.resource.data.snoozedUntilMs
+            <= request.time.toMillis() + 90 * 24 * 60 * 60 * 1000
+          && (
+            resource.data.expiresAtMs == null
+            || request.resource.data.snoozedUntilMs
+              <= resource.data.expiresAtMs
+          )
+        )
+      )
+      && (
+        request.resource.data.status != "archived"
+        || request.resource.data.archivedAtMs is number
+      );
+  }
+  */
+
+  allow read: if signedIn() && request.auth.uid == userId;
+  allow create: if false;
+  /*
+  allow update: if isPlannerOwner()
+    && request.resource.data.ownerUid == resource.data.ownerUid
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "status",
+      "viewedAtMs",
+      "actedAtMs",
+      "acceptedAtMs",
+      "dismissedAtMs",
+      "dismissalReason",
+      "snoozedUntilMs",
+      "archivedAtMs",
+      "updatedAtMs",
+      "updatedAt"
+    ])
+    && plannerTransitionAllowed()
+    && plannerLifecycleFieldsValid();
+  */
+  allow update: if false;
+  allow delete: if false;
+}
+
+match /plannerSuggestionExecutions/{executionId} {
+  allow read, create, update, delete: if false;
+}
+
+match /plannerMetrics/{metricId} {
+  allow read, create, update, delete: if false;
+}
+
+match /historyEvents/{historyEventId} {
+  allow read: if signedIn() && request.auth.uid == userId;
+  allow create, update, delete: if false;
+}
+
+match /plannerGenerationRuns/{runId} {
+  allow read, create, update, delete: if false;
+}
+
+match /groupNotificationPreferences/{groupId} {
+  allow read: if request.auth != null
+    && (
+      request.auth.uid == userId
+      || isGroupMember(groupId)
+    );
+
+  allow create, update, delete: if request.auth != null
+    && request.auth.uid == userId;
+}
+
+match /groupConversationMutes/{conversationId} {
+  allow read: if signedIn()
+    && request.auth.uid == userId;
+
+  allow create, update: if signedIn()
+    && request.auth.uid == userId
+    && request.resource.data.uid == userId
+    && request.resource.data.conversationId == conversationId
+    && request.resource.data.groupId is string
+    && request.resource.data.muted is bool
+    && request.resource.data.updatedAtMs is number
+    && exists(/databases/$(database)/documents/groupConversations/$(conversationId))
+    && request.auth.uid in get(/databases/$(database)/documents/groupConversations/$(conversationId)).data.memberUids
+ && get(/databases/$(database)/documents/groupConversations/$(conversationId)).data.groupId == request.resource.data.groupId
+&& isGroupMember(request.resource.data.groupId);
+
+  allow delete: if signedIn()
+    && request.auth.uid == userId;
+}
+
+match /groupInbox/{inboxItemId} {
+  allow read: if request.auth != null
+    && request.auth.uid == userId;
+
+allow create: if request.auth != null
+  && request.resource.data.get("trustedRoutine", false) != true
+  && (
+    request.auth.uid == userId
+    || (
+request.resource.data.type == "assignment"
+&& request.resource.data.actorUid == request.auth.uid
+&& request.resource.data.uid == userId
+&& request.resource.data.groupId is string
+&& (
+  (
+    request.resource.data.goalId is string
+    && canCreateSharedGoalAssignmentSideEffects(
+      request.resource.data.groupId,
+      request.resource.data.goalId,
+      userId
+    )
+  )
+  ||
+  (
+    request.resource.data.boardId is string
+    && request.resource.data.cardId is string
+    && canCreatePlanningBoardAssignmentSideEffects(
+      request.resource.data.groupId,
+      request.resource.data.boardId,
+      request.resource.data.cardId,
+      userId
+    )
+  )
+)
+)
+||
+(
+  request.resource.data.type == "comment"
+  && request.resource.data.actorUid == request.auth.uid
+  && request.resource.data.uid == userId
+  && request.resource.data.groupId is string
+  && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId))
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId)).data.status == "active"
+  && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.auth.uid))
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.auth.uid)).data.status == "active"
+)
+||
+(
+  request.resource.data.type == "activity"
+  && request.resource.data.moderation == true
+  && request.resource.data.actorUid == request.auth.uid
+  && request.resource.data.uid == userId
+  && request.resource.data.groupId is string
+  && isGroupMember(request.resource.data.groupId)
+  && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId))
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId)).data.status == "active"
+  && (
+    get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId)).data.role == "owner"
+    || get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId)).data.role == "admin"
+    || get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId)).data.role == "moderator"
+  )
+)
+||
+(
+  request.resource.data.type == "activity"
+  && request.resource.data.joinRequest == true
+  && request.resource.data.actorUid == request.auth.uid
+  && request.resource.data.uid == userId
+  && request.resource.data.groupId is string
+  && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/joinRequests/$(request.resource.data.actorUid))
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/joinRequests/$(request.resource.data.actorUid)).data.status == "pending"
+  && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId))
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId)).data.status == "active"
+  && (
+    get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId)).data.role == "owner"
+    || get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(userId)).data.role == "admin"
+  )
+)
+||
+(
+  request.resource.data.type == "dm"
+  && request.resource.data.actorUid == request.auth.uid
+  && request.resource.data.uid == userId
+  && request.resource.data.groupId is string
+  && request.resource.data.dmId is string
+  && exists(/databases/$(database)/documents/groupDms/$(request.resource.data.dmId))
+  && get(/databases/$(database)/documents/groupDms/$(request.resource.data.dmId)).data.groupId == request.resource.data.groupId
+  && request.auth.uid in get(/databases/$(database)/documents/groupDms/$(request.resource.data.dmId)).data.participantUids
+  && userId in get(/databases/$(database)/documents/groupDms/$(request.resource.data.dmId)).data.participantUids
+)
+||
+(
+  request.resource.data.type == "conversation"
+  && request.resource.data.actorUid == request.auth.uid
+  && request.resource.data.uid == userId
+  && request.resource.data.groupId is string
+  && request.resource.data.relatedEntityId is string
+  && exists(/databases/$(database)/documents/groupConversations/$(request.resource.data.relatedEntityId))
+  && get(/databases/$(database)/documents/groupConversations/$(request.resource.data.relatedEntityId)).data.groupId == request.resource.data.groupId
+  && request.auth.uid in get(/databases/$(database)/documents/groupConversations/$(request.resource.data.relatedEntityId)).data.memberUids
+  && userId in get(/databases/$(database)/documents/groupConversations/$(request.resource.data.relatedEntityId)).data.memberUids
+)
+  )
+  && request.resource.data.uid == userId
+  && request.resource.data.groupId is string
+  && request.resource.data.title is string
+  && request.resource.data.title.size() > 0
+  && request.resource.data.title.size() <= 160
+  && (
+    request.resource.data.type == "assignment"
+    || request.resource.data.type == "comment"
+    || request.resource.data.type == "activity"
+		|| request.resource.data.type == "dm"
+		|| request.resource.data.type == "conversation"
+  )
+  && (
+  !("idempotencyKey" in request.resource.data)
+  || request.resource.data.idempotencyKey == null
+  || request.resource.data.idempotencyKey is string
+)
+&& request.resource.data.createdAtMs is number
+&& (
+  !("updatedAtMs" in request.resource.data)
+  || request.resource.data.updatedAtMs is number
+)
+&& (
+  !("moderation" in request.resource.data)
+  || request.resource.data.moderation is bool
+)
+&& (
+  !("reportId" in request.resource.data)
+  || request.resource.data.reportId == null
+  || request.resource.data.reportId is string
+)
+&& (
+  !("joinRequest" in request.resource.data)
+  || request.resource.data.joinRequest is bool
+)
+&& (
+  !("joinRequestUid" in request.resource.data)
+  || request.resource.data.joinRequestUid == null
+  || request.resource.data.joinRequestUid is string
+)
+&& (
+  !("dmId" in request.resource.data)
+  || request.resource.data.dmId == null
+  || request.resource.data.dmId is string
+)
+&& (
+  !("relatedEntityId" in request.resource.data)
+  || request.resource.data.relatedEntityId == null
+  || request.resource.data.relatedEntityId is string
+);
+
+allow update: if request.auth != null
+  && request.auth.uid == userId
+  && resource.data.uid == userId
+  && request.resource.data.uid == resource.data.uid
+  && request.resource.data.groupId == resource.data.groupId
+  && request.resource.data.type == resource.data.type
+  && request.resource.data.title == resource.data.title
+  && (
+    (
+      !("dmId" in resource.data)
+      && !("dmId" in request.resource.data)
+    )
+    || request.resource.data.dmId == resource.data.dmId
+  )
+  && request.resource.data.createdAtMs == resource.data.createdAtMs
+  && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+    "readAtMs",
+    "updatedAtMs",
+    "updatedAt"
+  ])
+  && request.resource.data.updatedAtMs is number
+  && (
+    request.resource.data.readAtMs == null
+    || request.resource.data.readAtMs is number
+  );
+
+  allow delete: if request.auth != null
+    && request.auth.uid == userId;
+}
+
+
+    }
+
+match /planningLinks/{linkId} {
+  allow read: if canReadPlanningData(resource.data);
+
+  allow create: if signedIn()
+    && request.resource.data.id == linkId
+    && request.resource.data.createdByUid == request.auth.uid
+    && hasValidPlanningLinkShape(request.resource.data)
+    && (
+      (
+        request.resource.data.ownerUid == request.auth.uid
+        && (
+          !("groupId" in request.resource.data)
+          || request.resource.data.groupId == null
+        )
+      )
+      ||
+      (
+        request.resource.data.groupId is string
+        && isGroupMember(request.resource.data.groupId)
+      )
+    );
+
+  allow update: if canWritePlanningData(resource.data)
+    && hasValidPlanningLinkShape(request.resource.data)
+    && request.resource.data.id == resource.data.id
+    && request.resource.data.sourceType == resource.data.sourceType
+    && request.resource.data.sourceId == resource.data.sourceId
+    && request.resource.data.targetType == resource.data.targetType
+    && request.resource.data.targetId == resource.data.targetId
+    && request.resource.data.relation == resource.data.relation
+    && hasStablePlanningOwnership()
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "archived",
+      "updatedAtMs",
+      "updatedAt"
+    ])
+    && request.resource.data.updatedAtMs is number;
+
+  allow delete: if signedIn()
+    && (
+      resource.data.ownerUid == request.auth.uid
+      || (
+        resource.data.groupId is string
+        && isGroupAdmin(resource.data.groupId)
+      )
+    );
+}
+
+match /planningBoards/{boardId} {
+  allow read: if canReadPlanningData(resource.data);
+
+  allow create: if signedIn()
+    && request.resource.data.id == boardId
+    && request.resource.data.createdByUid == request.auth.uid
+    && hasValidPlanningBoardShape(request.resource.data)
+    && (
+      (
+        request.resource.data.scope == "personal"
+        && request.resource.data.ownerUid == request.auth.uid
+        && (
+          !("groupId" in request.resource.data)
+          || request.resource.data.groupId == null
+        )
+      )
+      ||
+      (
+        request.resource.data.scope == "group"
+        && request.resource.data.groupId is string
+        && isGroupAdmin(request.resource.data.groupId)
+        && (
+          !("ownerUid" in request.resource.data)
+          || request.resource.data.ownerUid == null
+        )
+      )
+    );
+
+  allow update: if canManagePlanningBoardData(resource.data)
+    && hasValidPlanningBoardShape(request.resource.data)
+    && request.resource.data.id == resource.data.id
+    && request.resource.data.scope == resource.data.scope
+    && hasStablePlanningOwnership()
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "title",
+      "columns",
+      "archived",
+      "updatedAtMs",
+      "updatedAt"
+    ])
+    && request.resource.data.updatedAtMs is number;
+
+  allow delete: if signedIn()
+    && (
+      resource.data.ownerUid == request.auth.uid
+      || (
+        resource.data.groupId is string
+        && isGroupAdmin(resource.data.groupId)
+      )
+    );
+
+match /cards/{cardId} {
+  function parentBoardExists() {
+    return exists(/databases/$(database)/documents/planningBoards/$(boardId));
+  }
+
+  function parentBoardData() {
+    return get(/databases/$(database)/documents/planningBoards/$(boardId)).data;
+  }
+
+  function canReadParentBoard() {
+    return signedIn()
+      && parentBoardExists()
+      && canReadPlanningData(parentBoardData());
+  }
+
+  function isPersonalBoardOwner() {
+    return signedIn()
+      && parentBoardExists()
+      && parentBoardData().scope == "personal"
+      && parentBoardData().ownerUid == request.auth.uid;
+  }
+
+  function isGroupBoardMember() {
+    return signedIn()
+      && parentBoardExists()
+      && parentBoardData().scope == "group"
+      && parentBoardData().groupId is string
+      && isGroupMember(parentBoardData().groupId);
+  }
+
+  function isGroupBoardAdmin() {
+    return signedIn()
+      && parentBoardExists()
+      && parentBoardData().scope == "group"
+      && parentBoardData().groupId is string
+      && isGroupAdmin(parentBoardData().groupId);
+  }
+
+  function isGroupBoardModeratorOrAdmin() {
+    return signedIn()
+      && parentBoardExists()
+      && parentBoardData().scope == "group"
+      && parentBoardData().groupId is string
+      && isGroupModeratorOrAdmin(parentBoardData().groupId);
+  }
+
+  function isGroupBoardRegularMember() {
+    return isGroupBoardMember()
+      && get(
+        /databases/$(database)/documents/groups/$(parentBoardData().groupId)/members/$(request.auth.uid)
+      ).data.role == "member";
+  }
+
+  function isGroupBoardContributor() {
+    return isGroupBoardModeratorOrAdmin()
+      || (
+        isGroupBoardMember()
+        && get(/databases/$(database)/documents/groups/$(parentBoardData().groupId)/members/$(request.auth.uid)).data.role == "member"
+      );
+  }
+
+  function hasPersonalCardOwnership() {
+    return request.resource.data.ownerUid == request.auth.uid
+      && (
+        !("groupId" in request.resource.data)
+        || request.resource.data.groupId == null
+      );
+  }
+
+  function hasGroupCardOwnership() {
+    return request.resource.data.groupId == parentBoardData().groupId
+      && (
+        !("ownerUid" in request.resource.data)
+        || request.resource.data.ownerUid == null
+      );
+  }
+
+  function hasNoAssignedUser() {
+    return (
+        !("assignedToUid" in request.resource.data)
+        || request.resource.data.assignedToUid == null
+      )
+      && (
+        !("assignedToName" in request.resource.data)
+        || request.resource.data.assignedToName == null
+      )
+      && (
+        !("assignedToEmail" in request.resource.data)
+        || request.resource.data.assignedToEmail == null
+      );
+  }
+
+  function canCreateCard() {
+    return signedIn()
+      && request.resource.data.createdByUid == request.auth.uid
+      && (
+        (
+          isPersonalBoardOwner()
+          && hasPersonalCardOwnership()
+        )
+        ||
+        (
+          isGroupBoardContributor()
+          && hasGroupCardOwnership()
+          && (
+            isGroupBoardModeratorOrAdmin()
+            || hasNoAssignedUser()
+          )
+        )
+      );
+  }
+
+  function isCardCreator() {
+    return resource.data.createdByUid == request.auth.uid;
+  }
+
+  function isCardAssignee() {
+    return resource.data.assignedToUid == request.auth.uid;
+  }
+
+  function memberCardUpdateFieldsAllowed() {
+    return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "title",
+      "description",
+      "columnId",
+      "sortOrder",
+      "status",
+      "priority",
+      "dueAtMs",
+      "archived",
+      "updatedAtMs",
+      "updatedAt"
+    ]);
+  }
+
+  function memberArchiveChangeAllowed() {
+    return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+      "archived"
+    ])
+    || isCardCreator();
+  }
+
+  function canUpdateCard() {
+    return signedIn()
+      && (
+        isPersonalBoardOwner()
+        || isGroupBoardModeratorOrAdmin()
+        || (
+          isGroupBoardRegularMember()
+          && (isCardCreator() || isCardAssignee())
+          && memberCardUpdateFieldsAllowed()
+          && memberArchiveChangeAllowed()
+        )
+      );
+  }
+
+  function canDeleteCard() {
+    return isPersonalBoardOwner() || isGroupBoardAdmin();
+  }
+
+  function hasValidGroupCardAssignment(data) {
+    return (
+      (
+        !("assignedToUid" in data)
+        || data.assignedToUid == null
+      )
+      && (
+        !("assignedToName" in data)
+        || data.assignedToName == null
+      )
+      && (
+        !("assignedToEmail" in data)
+        || data.assignedToEmail == null
+      )
+    )
+    ||
+    (
+      data.assignedToUid is string
+      && data.assignedToUid.size() > 0
+      && exists(
+        /databases/$(database)/documents/groups/$(parentBoardData().groupId)/members/$(data.assignedToUid)
+      )
+      && get(
+        /databases/$(database)/documents/groups/$(parentBoardData().groupId)/members/$(data.assignedToUid)
+      ).data.status == "active"
+      && data.get("assignedToName", null) == get(
+        /databases/$(database)/documents/groups/$(parentBoardData().groupId)/members/$(data.assignedToUid)
+      ).data.get("displayName", null)
+      && data.get("assignedToEmail", null) == get(
+        /databases/$(database)/documents/groups/$(parentBoardData().groupId)/members/$(data.assignedToUid)
+      ).data.get("email", null)
+    );
+  }
+
+  function hasValidCardAssignment(data) {
+    return isPersonalBoardOwner()
+      || (
+        isGroupBoardMember()
+        && hasValidGroupCardAssignment(data)
+      );
+  }
+
+  function hasValidCardAssignmentUpdate() {
+    return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+      "assignedToUid",
+      "assignedToName",
+      "assignedToEmail"
+    ])
+    || hasValidCardAssignment(request.resource.data);
+  }
+
+  function hasValidLinkedItemPair(data) {
+    return (
+      (
+        !("linkedItemType" in data)
+        || data.linkedItemType == null
+      )
+      && (
+        !("linkedItemId" in data)
+        || data.linkedItemId == null
+      )
+    )
+    ||
+    (
+      data.linkedItemType is string
+      && isValidPlanningItemType(data.linkedItemType)
+      && data.linkedItemId is string
+      && data.linkedItemId.size() > 0
+    );
+  }
+
+  function hasValidPlanningBoardCardShape(data) {
+    return data.id is string
+      && data.boardId == boardId
+      && data.title is string
+      && data.title.size() > 0
+      && data.title.size() <= 160
+      && data.columnId is string
+      && isValidPlanningBoardColumnId(data.columnId)
+      && data.sortOrder is number
+      && data.createdByUid is string
+      && data.createdAtMs is number
+      && data.updatedAtMs is number
+      && hasValidLinkedItemPair(data)
+      && (
+        !("description" in data)
+        || data.description == null
+        || (
+          data.description is string
+          && data.description.size() <= 1000
+        )
+      )
+      && (
+        !("linkedItemType" in data)
+        || data.linkedItemType == null
+        || isValidPlanningItemType(data.linkedItemType)
+      )
+      && (
+        !("linkedItemId" in data)
+        || data.linkedItemId == null
+        || data.linkedItemId is string
+      )
+      && (
+        !("status" in data)
+        || data.status == null
+        || data.status in [
+          "idea",
+          "backlog",
+          "next",
+          "active",
+          "in_progress",
+          "review",
+          "completed",
+          "archived"
+        ]
+      )
+      && (
+        !("priority" in data)
+        || data.priority == null
+        || data.priority in ["low", "medium", "high"]
+      )
+      && (
+        !("dueAtMs" in data)
+        || data.dueAtMs == null
+        || data.dueAtMs is number
+      )
+      && (
+        !("assignedToUid" in data)
+        || data.assignedToUid == null
+        || data.assignedToUid is string
+      )
+      && (
+        !("assignedToName" in data)
+        || data.assignedToName == null
+        || data.assignedToName is string
+      )
+      && (
+        !("assignedToEmail" in data)
+        || data.assignedToEmail == null
+        || data.assignedToEmail is string
+      )
+      && (
+        !("ownerUid" in data)
+        || data.ownerUid == null
+        || data.ownerUid is string
+      )
+      && (
+        !("groupId" in data)
+        || data.groupId == null
+        || data.groupId is string
+      )
+      && (
+        !("archived" in data)
+        || data.archived is bool
+      );
+  }
+
+  allow read: if canReadParentBoard();
+
+  allow create: if canCreateCard()
+    && request.resource.data.id == cardId
+    && request.resource.data.createdByUid == request.auth.uid
+    && hasValidPlanningBoardCardShape(request.resource.data)
+    && hasValidCardAssignment(request.resource.data);
+
+  allow update: if canUpdateCard()
+    && hasValidPlanningBoardCardShape(request.resource.data)
+    && hasValidCardAssignmentUpdate()
+    && request.resource.data.id == resource.data.id
+    && request.resource.data.boardId == resource.data.boardId
+    && hasStablePlanningOwnership()
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "title",
+      "description",
+      "columnId",
+      "sortOrder",
+      "linkedItemType",
+      "linkedItemId",
+      "status",
+      "priority",
+      "dueAtMs",
+      "assignedToUid",
+      "assignedToName",
+      "assignedToEmail",
+      "ownerUid",
+      "groupId",
+      "archived",
+      "updatedAtMs",
+      "updatedAt"
+    ])
+    && request.resource.data.updatedAtMs is number;
+
+  allow delete: if canDeleteCard();
+}
+
+}
+
+match /groupRoutines/{routineId} {
+  allow get: if signedIn()
+    && (
+      !exists(/databases/$(database)/documents/groupRoutines/$(routineId))
+      || isActiveGroupRoutineMember(resource.data.groupId)
+    );
+
+  allow list: if isActiveGroupRoutineMember(resource.data.groupId);
+
+  allow create: if signedIn()
+    && request.resource.data.id == routineId
+    && request.resource.data.createdByUid == request.auth.uid
+    && request.resource.data.status == "active"
+    && request.resource.data.nextOccurrenceAtMs is number
+    && request.resource.data.nextOccurrenceAtMs > 0
+    && request.resource.data.pausedAtMs == null
+    && request.resource.data.pausedByUid == null
+    && request.resource.data.archivedAtMs == null
+    && request.resource.data.archivedByUid == null
+    && request.resource.data.createdAtMs == request.resource.data.updatedAtMs
+    && request.resource.data.createdAt == request.time
+    && request.resource.data.updatedAt == request.time
+    && canCreateGroupRoutine(request.resource.data.groupId)
+    && hasValidGroupRoutineShape(request.resource.data);
+
+  allow update: if canManageGroupRoutine(resource.data)
+    && hasValidGroupRoutineShape(request.resource.data)
+    && request.resource.data.id == resource.data.id
+    && request.resource.data.groupId == resource.data.groupId
+    && request.resource.data.createdByUid == resource.data.createdByUid
+    && request.resource.data.createdByName == resource.data.createdByName
+    && request.resource.data.createdByEmail == resource.data.createdByEmail
+    && request.resource.data.createdAtMs == resource.data.createdAtMs
+    && request.resource.data.createdAt == resource.data.createdAt
+    && request.resource.data.updatedAt == request.time
+    && resource.data.status != "archived"
+    && (
+      (
+        request.resource.data.status == resource.data.status
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "title", "description", "location", "frequency", "interval",
+          "weekdays", "monthlyMode", "dayOfMonth", "weekOfMonth",
+          "weekdayOfMonth", "localStartTime", "durationMinutes", "timezone",
+          "startDate", "endDate", "nextOccurrenceAtMs", "participantUids",
+          "updatedAtMs", "updatedAt"
+        ])
+        && (
+          (resource.data.status == "active" && request.resource.data.nextOccurrenceAtMs is number)
+          || (resource.data.status == "paused" && request.resource.data.nextOccurrenceAtMs == null)
+        )
+      )
+      || (
+        resource.data.status == "active"
+        && request.resource.data.status == "paused"
+        && request.resource.data.pausedByUid == request.auth.uid
+        && request.resource.data.pausedAtMs is number
+        && request.resource.data.updatedAtMs == request.resource.data.pausedAtMs
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "pausedAtMs", "pausedByUid", "nextOccurrenceAtMs",
+          "updatedAtMs", "updatedAt"
+        ])
+      )
+      || (
+        resource.data.status == "paused"
+        && request.resource.data.status == "active"
+        && request.resource.data.pausedAtMs == null
+        && request.resource.data.pausedByUid == null
+        && request.resource.data.nextOccurrenceAtMs is number
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "pausedAtMs", "pausedByUid", "nextOccurrenceAtMs",
+          "updatedAtMs", "updatedAt"
+        ])
+      )
+      || (
+        request.resource.data.status == "archived"
+        && request.resource.data.archivedByUid == request.auth.uid
+        && request.resource.data.archivedAtMs is number
+        && request.resource.data.updatedAtMs == request.resource.data.archivedAtMs
+        && (
+          resource.data.status == "active"
+          || (
+            resource.data.status == "paused"
+            && request.resource.data.pausedAtMs == resource.data.pausedAtMs
+            && request.resource.data.pausedByUid == resource.data.pausedByUid
+          )
+        )
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "archivedAtMs", "archivedByUid", "nextOccurrenceAtMs",
+          "updatedAtMs", "updatedAt"
+        ])
+      )
+    );
+
+  allow delete: if false;
+}
+
+match /groupRoutineOccurrences/{occurrenceId} {
+  allow get: if signedIn()
+    && (
+      !exists(/databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId))
+      || (
+        resource.data.groupId is string
+        && exists(/databases/$(database)/documents/groups/$(resource.data.groupId))
+        && isGroupMember(resource.data.groupId)
+      )
+    );
+  allow list: if resource.data.groupId is string
+    && exists(/databases/$(database)/documents/groups/$(resource.data.groupId))
+    && isGroupMember(resource.data.groupId);
+  allow create, delete: if false;
+
+  /*
+  allow update: if isActiveGroupRoutineMember(resource.data.groupId)
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "executionStatus", "executionUpdatedAtMs", "executionUpdatedByUid",
+      "executionParticipantUid", "executionRevision",
+      "completedAtMs", "completedByUid", "skippedAtMs", "skippedByUid",
+      "skipReason", "reopenedAtMs", "reopenedByUid",
+      "participantCount", "pendingParticipantCount",
+      "completedParticipantCount", "skippedParticipantCount",
+      "excusedParticipantCount", "updatedAtMs", "updatedAt"
+    ])
+    && request.resource.data.executionUpdatedByUid == request.auth.uid
+    && request.resource.data.executionUpdatedAtMs is number
+    && request.resource.data.executionUpdatedAtMs > 0
+    && request.resource.data.updatedAtMs
+      == request.resource.data.executionUpdatedAtMs
+    && request.resource.data.updatedAt == request.time
+    && resource.data.status == "scheduled"
+    && request.resource.data.status == "scheduled"
+    && request.resource.data.executionStatus
+      in ["scheduled", "in_progress", "completed", "skipped"]
+    && request.resource.data.executionRevision is int
+    && request.resource.data.executionRevision >= 0
+    && (
+      (
+        request.resource.data.executionStatus == resource.data.executionStatus
+        && request.resource.data.executionRevision
+          == resource.data.get("executionRevision", 0)
+      )
+      || (
+        request.resource.data.executionStatus != resource.data.executionStatus
+        && request.resource.data.executionRevision
+          == resource.data.get("executionRevision", 0) + 1
+      )
+    )
+    && request.resource.data.participantCount is int
+    && request.resource.data.participantCount
+      == request.resource.data.participantUids.size()
+    && request.resource.data.pendingParticipantCount is int
+    && request.resource.data.pendingParticipantCount >= 0
+    && request.resource.data.completedParticipantCount is int
+    && request.resource.data.completedParticipantCount >= 0
+    && request.resource.data.skippedParticipantCount is int
+    && request.resource.data.skippedParticipantCount >= 0
+    && request.resource.data.excusedParticipantCount is int
+    && request.resource.data.excusedParticipantCount >= 0
+    && request.resource.data.pendingParticipantCount
+      + request.resource.data.completedParticipantCount
+      + request.resource.data.skippedParticipantCount
+      + request.resource.data.excusedParticipantCount
+      == request.resource.data.participantCount
+    && (
+      (
+        resource.data.participantCount > 0
+        && request.resource.data.executionParticipantUid
+          in resource.data.participantUids
+        && getAfter(
+          /databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId)/participants/$(request.resource.data.executionParticipantUid)
+        ).data.updatedByUid == request.auth.uid
+        && getAfter(
+          /databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId)/participants/$(request.resource.data.executionParticipantUid)
+        ).data.updatedAtMs == request.resource.data.executionUpdatedAtMs
+      )
+      || (
+        resource.data.participantCount == 0
+        && request.resource.data.executionParticipantUid == null
+        && canManageGroupRoutine(
+          get(
+            /databases/$(database)/documents/groupRoutines/$(resource.data.routineId)
+          ).data
+        )
+      )
+    );
+  */
+  allow update: if false;
+
+  match /participants/{participantId} {
+    allow read: if signedIn()
+      && exists(
+        /databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId)
+      )
+      && isActiveGroupRoutineMember(
+        get(
+          /databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId)
+        ).data.groupId
+      );
+    allow create, delete: if false;
+    /*
+    allow update: if signedIn()
+      && resource.data.id == participantId
+      && resource.data.uid == participantId
+      && request.resource.data.id == resource.data.id
+      && request.resource.data.uid == resource.data.uid
+      && request.resource.data.groupId == resource.data.groupId
+      && request.resource.data.routineId == resource.data.routineId
+      && request.resource.data.occurrenceId == resource.data.occurrenceId
+      && request.resource.data.createdAtMs == resource.data.createdAtMs
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "status", "statusRevision", "note", "completedAtMs", "skippedAtMs", "excusedAtMs",
+        "updatedByUid", "updatedAtMs"
+      ])
+      && request.resource.data.status
+        in ["pending", "completed", "skipped", "excused"]
+      && request.resource.data.statusRevision is int
+      && request.resource.data.statusRevision >= 0
+      && (
+        (
+          request.resource.data.status == resource.data.status
+          && request.resource.data.statusRevision
+            == resource.data.get("statusRevision", 0)
+        )
+        || (
+          request.resource.data.status != resource.data.status
+          && request.resource.data.statusRevision
+            == resource.data.get("statusRevision", 0) + 1
+        )
+      )
+      && (
+        request.resource.data.note == null
+        || (
+          request.resource.data.note is string
+          && request.resource.data.note.size() <= 500
+        )
+      )
+      && request.resource.data.updatedByUid == request.auth.uid
+      && request.resource.data.updatedAtMs is number
+      && request.resource.data.updatedAtMs > 0
+      && exists(
+        /databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId)
+      )
+      && get(
+        /databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId)
+      ).data.status == "scheduled"
+      && getAfter(
+        /databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId)
+      ).data.executionUpdatedByUid == request.auth.uid
+      && getAfter(
+        /databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId)
+      ).data.executionUpdatedAtMs == request.resource.data.updatedAtMs
+      && participantId in get(
+        /databases/$(database)/documents/groupRoutineOccurrences/$(occurrenceId)
+      ).data.participantUids
+      && isActiveGroupRoutineMember(resource.data.groupId)
+      && (
+        (
+          request.auth.uid == participantId
+          && request.resource.data.status in ["pending", "completed", "skipped"]
+        )
+        || canManageGroupRoutine(
+          get(
+            /databases/$(database)/documents/groupRoutines/$(resource.data.routineId)
+          ).data
+        )
+      );
+    */
+    allow update: if false;
+  }
+}
+
+match /planningCalendarEvents/{eventId} {
+  allow get: if signedIn()
+    && (
+      !exists(/databases/$(database)/documents/planningCalendarEvents/$(eventId))
+      || (
+        resource.data.groupId is string
+        && exists(/databases/$(database)/documents/groups/$(resource.data.groupId))
+        && isGroupMember(resource.data.groupId)
+      )
+      || canReadPlanningData(resource.data)
+    );
+
+  allow list: if (
+    resource.data.groupId is string
+    && exists(/databases/$(database)/documents/groups/$(resource.data.groupId))
+    && isGroupMember(resource.data.groupId)
+  ) || canReadPlanningData(resource.data);
+
+  allow create: if (
+    isGroupCalendarEventData(request.resource.data)
+    && !isRoutineGeneratedCalendarEventData(request.resource.data)
+    && request.resource.data.id == eventId
+    && request.resource.data.createdByUid == request.auth.uid
+    && request.resource.data.status == "scheduled"
+    && request.resource.data.cancelledAtMs == null
+    && request.resource.data.cancelledByUid == null
+    && request.resource.data.createdAtMs == request.resource.data.updatedAtMs
+    && canCreateGroupCalendarEvent(request.resource.data.groupId)
+    && hasValidGroupCalendarEventShape(request.resource.data)
+  ) || (
+    !isGroupCalendarEventData(request.resource.data)
+    && !("status" in request.resource.data)
+    && signedIn()
+    && request.resource.data.id == eventId
+    && request.resource.data.createdByUid == request.auth.uid
+    && hasValidPlanningCalendarEventShape(request.resource.data)
+    && (
+      (
+        request.resource.data.scope == "personal"
+        && request.resource.data.visibility == "private"
+        && request.resource.data.ownerUid == request.auth.uid
+        && (
+          !("groupId" in request.resource.data)
+          || request.resource.data.groupId == null
+        )
+      )
+      ||
+      (
+        request.resource.data.scope == "group"
+        && request.resource.data.visibility == "group"
+        && request.resource.data.groupId is string
+        && isGroupMember(request.resource.data.groupId)
+        && (
+          !("ownerUid" in request.resource.data)
+          || request.resource.data.ownerUid == null
+        )
+      )
+    )
+  );
+
+  allow update: if (
+    isGroupCalendarEventData(resource.data)
+    && isGroupCalendarEventData(request.resource.data)
+    && !isRoutineGeneratedCalendarEventData(resource.data)
+    && !isRoutineGeneratedCalendarEventData(request.resource.data)
+    && hasValidGroupCalendarEventShape(request.resource.data)
+    && canManageGroupCalendarEvent(resource.data)
+    && request.resource.data.id == resource.data.id
+    && request.resource.data.scope == resource.data.scope
+    && request.resource.data.type == resource.data.type
+    && request.resource.data.visibility == resource.data.visibility
+    && request.resource.data.groupId == resource.data.groupId
+    && request.resource.data.createdByUid == resource.data.createdByUid
+    && request.resource.data.createdByName == resource.data.createdByName
+    && request.resource.data.createdByEmail == resource.data.createdByEmail
+    && request.resource.data.createdAtMs == resource.data.createdAtMs
+    && (
+      (
+        resource.data.status == "scheduled"
+        && request.resource.data.status == "scheduled"
+        && request.resource.data.cancelledAtMs == null
+        && request.resource.data.cancelledByUid == null
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "title",
+          "description",
+          "location",
+          "allDay",
+          "startAtMs",
+          "endAtMs",
+          "startDate",
+          "endDate",
+          "timezone",
+          "sortStartMs",
+          "sortEndMs",
+          "attendeeUids",
+          "updatedAtMs",
+          "updatedAt"
+        ])
+      )
+      || (
+        resource.data.status == "scheduled"
+        && request.resource.data.status == "cancelled"
+        && request.resource.data.cancelledByUid == request.auth.uid
+        && request.resource.data.cancelledAtMs is number
+        && request.resource.data.updatedAtMs == request.resource.data.cancelledAtMs
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status",
+          "cancelledAtMs",
+          "cancelledByUid",
+          "updatedAtMs",
+          "updatedAt"
+        ])
+      )
+    )
+  ) || (
+    !isGroupCalendarEventData(resource.data)
+    && !isGroupCalendarEventData(request.resource.data)
+    && canWritePlanningData(resource.data)
+    && hasValidPlanningCalendarEventShape(request.resource.data)
+    && request.resource.data.id == resource.data.id
+    && request.resource.data.scope == resource.data.scope
+    && hasStablePlanningOwnership()
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "title",
+      "description",
+      "type",
+      "visibility",
+      "goalId",
+      "boardId",
+      "routineId",
+      "startAtMs",
+      "endAtMs",
+      "allDay",
+      "archived",
+      "updatedAtMs",
+      "updatedAt"
+    ])
+    && request.resource.data.updatedAtMs is number
+  );
+
+  allow delete: if !isGroupCalendarEventData(resource.data)
+    && signedIn()
+    && (
+      resource.data.ownerUid == request.auth.uid
+      || (
+        resource.data.groupId is string
+        && isGroupAdmin(resource.data.groupId)
+      )
+    );
+}
+
+match /mediaUploadSessions/{sessionId} {
+  /*
+  function hasExactMediaSessionShape(data) {
+    return data.keys().hasOnly([
+      "id", "uploaderUid", "contextType", "groupId", "goalId", "subtaskId",
+      "progressEventId", "bulletinId", "commentId", "dmId", "conversationId",
+      "messageId", "status", "createdAtMs", "expiresAtMs", "finalizedAtMs",
+      "cancelledAtMs", "updatedAtMs", "createdAt", "updatedAt"
+    ])
+    && data.keys().size() == 20;
+  }
+
+  function hasValidSessionContext(data) {
+    return (
+      data.contextType == "progress"
+      && data.groupId == null && data.goalId is string && data.subtaskId is string
+      && data.progressEventId is string && data.bulletinId == null
+      && data.commentId == null && data.dmId == null
+      && data.conversationId == null && data.messageId == null
+      && exists(/databases/$(database)/documents/goals/$(data.goalId))
+      && exists(/databases/$(database)/documents/goals/$(data.goalId)/subtasks/$(data.subtaskId))
+      && (
+        get(/databases/$(database)/documents/goals/$(data.goalId)).data.userId == request.auth.uid
+        || get(/databases/$(database)/documents/goals/$(data.goalId)/subtasks/$(data.subtaskId)).data.assignedToUid == request.auth.uid
+      )
+    ) || (
+      data.contextType == "bulletin"
+      && data.groupId is string && data.bulletinId is string
+      && data.goalId == null && data.subtaskId == null && data.progressEventId == null
+      && data.commentId == null && data.dmId == null && data.conversationId == null && data.messageId == null
+      && exists(/databases/$(database)/documents/groups/$(data.groupId))
+      && isGroupModeratorOrAdmin(data.groupId)
+    ) || (
+      data.contextType == "bulletin_comment"
+      && data.groupId is string && data.bulletinId is string && data.commentId is string
+      && data.goalId == null && data.subtaskId == null && data.progressEventId == null
+      && data.dmId == null && data.conversationId == null && data.messageId == null
+      && exists(/databases/$(database)/documents/groups/$(data.groupId))
+      && exists(/databases/$(database)/documents/groups/$(data.groupId)/bulletins/$(data.bulletinId))
+      && get(/databases/$(database)/documents/groups/$(data.groupId)/bulletins/$(data.bulletinId)).data.hiddenByModeration != true
+      && (
+        !("deletedByAuthor" in get(/databases/$(database)/documents/groups/$(data.groupId)/bulletins/$(data.bulletinId)).data)
+        || get(/databases/$(database)/documents/groups/$(data.groupId)/bulletins/$(data.bulletinId)).data.deletedByAuthor != true
+      )
+      && isGroupMember(data.groupId)
+    ) || (
+      data.contextType == "shared_goal_comment"
+      && data.groupId is string && data.goalId is string && data.commentId is string
+      && data.subtaskId == null && data.progressEventId == null && data.bulletinId == null
+      && data.dmId == null && data.conversationId == null && data.messageId == null
+      && exists(/databases/$(database)/documents/groups/$(data.groupId))
+      && exists(/databases/$(database)/documents/groups/$(data.groupId)/sharedGoals/$(data.goalId))
+      && get(/databases/$(database)/documents/groups/$(data.groupId)/sharedGoals/$(data.goalId)).data.status == "active"
+      && isGroupMember(data.groupId)
+    ) || (
+      data.contextType == "group_dm_message"
+      && data.groupId is string && data.dmId is string && data.messageId is string
+      && data.goalId == null && data.subtaskId == null && data.progressEventId == null
+      && data.bulletinId == null && data.commentId == null && data.conversationId == null
+      && exists(/databases/$(database)/documents/groups/$(data.groupId))
+      && exists(/databases/$(database)/documents/groupDms/$(data.dmId))
+      && get(/databases/$(database)/documents/groupDms/$(data.dmId)).data.groupId == data.groupId
+      && request.auth.uid in get(/databases/$(database)/documents/groupDms/$(data.dmId)).data.participantUids
+      && isGroupMember(data.groupId)
+      && !exists(/databases/$(database)/documents/groups/$(data.groupId)/blockedUsers/$(request.auth.uid))
+    ) || (
+      data.contextType == "group_conversation_message"
+      && data.groupId is string && data.conversationId is string && data.messageId is string
+      && data.goalId == null && data.subtaskId == null && data.progressEventId == null
+      && data.bulletinId == null && data.commentId == null && data.dmId == null
+      && exists(/databases/$(database)/documents/groups/$(data.groupId))
+      && exists(/databases/$(database)/documents/groupConversations/$(data.conversationId))
+      && get(/databases/$(database)/documents/groupConversations/$(data.conversationId)).data.groupId == data.groupId
+      && request.auth.uid in get(/databases/$(database)/documents/groupConversations/$(data.conversationId)).data.memberUids
+      && isGroupMember(data.groupId)
+      && !exists(/databases/$(database)/documents/groups/$(data.groupId)/blockedUsers/$(request.auth.uid))
+    );
+  }
+  */
+
+  allow get: if signedIn() && resource.data.uploaderUid == request.auth.uid;
+  allow list: if false;
+  /*
+  allow create: if signedIn()
+    && hasExactMediaSessionShape(request.resource.data)
+    && request.resource.data.id == sessionId
+    && request.resource.data.uploaderUid == request.auth.uid
+    && request.resource.data.status == "active"
+    && request.resource.data.finalizedAtMs == null
+    && request.resource.data.cancelledAtMs == null
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs == request.resource.data.createdAtMs
+    && request.resource.data.expiresAtMs > request.resource.data.createdAtMs
+    && request.resource.data.expiresAtMs <= request.resource.data.createdAtMs + 30 * 60 * 1000
+    && request.resource.data.expiresAtMs > request.time.toMillis()
+    && hasValidSessionContext(request.resource.data);
+  allow update: if signedIn()
+    && resource.data.uploaderUid == request.auth.uid
+    && resource.data.status == "active"
+    && resource.data.expiresAtMs > request.time.toMillis()
+    && hasExactMediaSessionShape(request.resource.data)
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "status", "finalizedAtMs", "cancelledAtMs", "updatedAtMs", "updatedAt"
+    ])
+    && request.resource.data.updatedAtMs is number
+    && (
+      request.resource.data.status == "finalized"
+      && request.resource.data.finalizedAtMs is number
+      && request.resource.data.cancelledAtMs == null
+      ||
+      request.resource.data.status == "cancelled"
+      && request.resource.data.cancelledAtMs is number
+      && request.resource.data.finalizedAtMs == null
+    );
+  */
+  allow create, update: if false;
+  allow delete: if false;
+}
+
+    
+match /groups/{groupId} {
+  function hasValidGroupDiscoveryFields(data) {
+    return (
+      !("discoverable" in data)
+      || data.discoverable is bool
+    )
+    && (
+      !("joinPolicy" in data)
+      || data.joinPolicy in ["invite_only", "request", "open"]
+    )
+    && (
+      !("category" in data)
+      || data.category == null
+      || data.category in [
+        "general",
+        "fitness",
+        "productivity",
+        "learning",
+        "wellness",
+        "work",
+        "other"
+      ]
+    )
+    && (
+      !("tags" in data)
+      || (
+        data.tags is list
+        && data.tags.size() <= 8
+      )
+    )
+    && (
+      !("summary" in data)
+      || data.summary == null
+      || (
+        data.summary is string
+        && data.summary.size() <= 240
+      )
+    )
+    && (
+      !("isHiddenFromDiscovery" in data)
+      || data.isHiddenFromDiscovery is bool
+    )
+    && (
+      !("lastActivityAtMs" in data)
+      || data.lastActivityAtMs == null
+      || data.lastActivityAtMs is number
+    );
+  }
+
+  function isDiscoverableGroup(data) {
+    return signedIn()
+      && data.visibility == "searchable"
+      && data.discoverable == true
+      && data.isHiddenFromDiscovery != true;
+  }
+
+  allow create: if signedIn()
+    && request.resource.data.ownerUserId == request.auth.uid
+    && request.resource.data.name is string
+    && request.resource.data.visibility in ["private", "invite_only", "searchable"]
+    && request.resource.data.memberCount == 1
+    && hasValidGroupDiscoveryFields(request.resource.data);
+
+  allow read: if isGroupMember(groupId)
+    || isDiscoverableGroup(resource.data);
+
+   allow update: if (
+  (
+    isGroupAdmin(groupId)
+    && hasValidGroupDiscoveryFields(request.resource.data)
+    && request.resource.data.ownerUserId == resource.data.ownerUserId
+    && request.resource.data.createdAtMs == resource.data.createdAtMs
+    && request.resource.data.memberCount == resource.data.memberCount
+  )
+  || (
+    signedIn()
+    && resource.data.visibility == "searchable"
+    && resource.data.discoverable == true
+    && resource.data.isHiddenFromDiscovery != true
+    && resource.data.joinPolicy == "open"
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "memberCount",
+      "lastActivityAtMs",
+      "updatedAtMs",
+      "updatedAt"
+    ])
+    && request.resource.data.memberCount == resource.data.memberCount + 1
+    && request.resource.data.lastActivityAtMs is number
+    && request.resource.data.updatedAtMs is number
+    && existsAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+    && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.uid == request.auth.uid
+    && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == "active"
+    && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == "member"
+    && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.joinSource == "open_discovery"
+  )
+  || (
+    isGroupAdmin(groupId)
+    && resource.data.joinPolicy == "request"
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      "memberCount",
+      "lastApprovedJoinUid",
+      "lastActivityAtMs",
+      "updatedAtMs",
+      "updatedAt"
+    ])
+    && request.resource.data.memberCount == resource.data.memberCount + 1
+    && request.resource.data.lastApprovedJoinUid is string
+    && request.resource.data.lastActivityAtMs is number
+    && request.resource.data.updatedAtMs is number
+    && existsAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.resource.data.lastApprovedJoinUid))
+    && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.resource.data.lastApprovedJoinUid)).data.uid == request.resource.data.lastApprovedJoinUid
+    && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.resource.data.lastApprovedJoinUid)).data.status == "active"
+    && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.resource.data.lastApprovedJoinUid)).data.role == "member"
+    && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.resource.data.lastApprovedJoinUid)).data.joinSource == "request_approved"
+  )
+);
+
+  allow delete: if isGroupOwner(groupId);
+
+
+
+  match /members/{memberUid} {
+allow create: if signedIn()
+  && request.resource.data.uid == memberUid
+  && request.resource.data.status == "active"
+  && (
+(
+  memberUid == request.auth.uid
+  && request.resource.data.uid == request.auth.uid
+  && request.resource.data.role == "owner"
+  && existsAfter(
+    /databases/$(database)/documents/groups/$(groupId)
+  )
+  && getAfter(
+    /databases/$(database)/documents/groups/$(groupId)
+  ).data.ownerUserId == request.auth.uid
+)
+    || (
+      memberUid == request.auth.uid
+      && (
+        request.resource.data.role == "admin"
+        || request.resource.data.role == "moderator"
+        || request.resource.data.role == "member"
+        || request.resource.data.role == "viewer"
+      )
+      && request.resource.data.inviteId is string
+      && exists(/databases/$(database)/documents/groups/$(groupId)/invites/$(request.resource.data.inviteId))
+      && get(/databases/$(database)/documents/groups/$(groupId)/invites/$(request.resource.data.inviteId)).data.status == "pending"
+      && get(/databases/$(database)/documents/groups/$(groupId)/invites/$(request.resource.data.inviteId)).data.invitedEmail == request.auth.token.email
+    )
+    || (
+      memberUid == request.auth.uid
+      && request.resource.data.role == "member"
+      && request.resource.data.joinSource == "open_discovery"
+			&& !isBlockedFromGroup(groupId, memberUid)
+      && get(/databases/$(database)/documents/groups/$(groupId)).data.visibility == "searchable"
+      && get(/databases/$(database)/documents/groups/$(groupId)).data.discoverable == true
+      && get(/databases/$(database)/documents/groups/$(groupId)).data.isHiddenFromDiscovery != true
+      && get(/databases/$(database)/documents/groups/$(groupId)).data.joinPolicy == "open"
+    )
+    || (
+      isGroupAdmin(groupId)
+      && request.resource.data.role == "member"
+      && request.resource.data.joinSource == "request_approved"
+			  && !isBlockedFromGroup(groupId, memberUid)
+      && exists(/databases/$(database)/documents/groups/$(groupId)/joinRequests/$(memberUid))
+      && get(/databases/$(database)/documents/groups/$(groupId)/joinRequests/$(memberUid)).data.status == "pending"
+    )
+  );
+    allow read: if isGroupMember(groupId);
+
+allow update: if (
+  isGroupAdmin(groupId)
+  && resource.data.role != "owner"
+)
+|| (
+  signedIn()
+  && memberUid == request.auth.uid
+  && resource.data.status == "removed"
+  && request.resource.data.uid == request.auth.uid
+  && request.resource.data.status == "active"
+  && (
+    request.resource.data.role == "admin"
+    || request.resource.data.role == "moderator"
+    || request.resource.data.role == "member"
+    || request.resource.data.role == "viewer"
+  )
+  && request.resource.data.inviteId is string
+  && exists(/databases/$(database)/documents/groups/$(groupId)/invites/$(request.resource.data.inviteId))
+  && (
+    get(/databases/$(database)/documents/groups/$(groupId)/invites/$(request.resource.data.inviteId)).data.status == "pending"
+    || (
+      get(/databases/$(database)/documents/groups/$(groupId)/invites/$(request.resource.data.inviteId)).data.status == "accepted"
+      && get(/databases/$(database)/documents/groups/$(groupId)/invites/$(request.resource.data.inviteId)).data.acceptedByUid == request.auth.uid
+    )
+  )
+  && get(/databases/$(database)/documents/groups/$(groupId)/invites/$(request.resource.data.inviteId)).data.invitedEmail == request.auth.token.email
+)
+|| (
+  signedIn()
+  && memberUid == request.auth.uid
+  && resource.data.uid == request.auth.uid
+  && resource.data.status == "active"
+  && resource.data.role != "owner"
+  && request.resource.data.status == "removed"
+  && request.resource.data.uid == resource.data.uid
+  && request.resource.data.role == resource.data.role
+);
+ 
+
+    allow delete: if isGroupOwner(groupId);
+  }
+
+match /blockedUsers/{blockedUid} {
+
+  allow get: if isGroupMember(groupId)
+    || (
+      signedIn()
+      && blockedUid == request.auth.uid
+    );
+
+  allow list: if isGroupModeratorOrAdmin(groupId);
+
+  allow create: if isGroupAdmin(groupId)
+    && request.resource.data.uid == blockedUid;
+
+  allow update: if isGroupAdmin(groupId);
+
+  allow delete: if isGroupAdmin(groupId);
+}
+
+match /presence/{presenceUid} {
+  allow read: if isGroupMember(groupId);
+
+  allow create, update: if isGroupMember(groupId)
+    && presenceUid == request.auth.uid
+    && request.resource.data.uid == request.auth.uid
+    && request.resource.data.groupId == groupId
+    && request.resource.data.lastSeenAtMs is number
+    && request.resource.data.updatedAtMs is number
+    && (
+      request.resource.data.status == "online"
+      || request.resource.data.status == "recent"
+      || request.resource.data.status == "offline"
+    )
+    && (
+      !("activeRoute" in request.resource.data)
+      || request.resource.data.activeRoute == null
+      || request.resource.data.activeRoute is string
+    )
+    && (
+      !("activeGoalId" in request.resource.data)
+      || request.resource.data.activeGoalId == null
+      || request.resource.data.activeGoalId is string
+    )
+    && (
+      !("activeGoalTitle" in request.resource.data)
+      || request.resource.data.activeGoalTitle == null
+      || request.resource.data.activeGoalTitle is string
+    );
+
+  allow delete: if presenceUid == request.auth.uid || isGroupAdmin(groupId);
+}
+
+match /memberReadState/{memberUid} {
+  allow read: if isGroupMember(groupId)
+    && memberUid == request.auth.uid;
+
+  allow create, update: if isGroupMember(groupId)
+    && memberUid == request.auth.uid
+    && request.resource.data.uid == request.auth.uid
+    && request.resource.data.groupId == groupId
+    && request.resource.data.updatedAtMs is number
+    && (
+      !("lastViewedActivityAtMs" in request.resource.data)
+      || request.resource.data.lastViewedActivityAtMs == null
+      || request.resource.data.lastViewedActivityAtMs is number
+    )
+    && (
+      !("lastViewedCommentsAtMs" in request.resource.data)
+      || request.resource.data.lastViewedCommentsAtMs == null
+      || request.resource.data.lastViewedCommentsAtMs is number
+    )
+    && (
+      !("lastViewedAssignmentsAtMs" in request.resource.data)
+      || request.resource.data.lastViewedAssignmentsAtMs == null
+      || request.resource.data.lastViewedAssignmentsAtMs is number
+    );
+
+  allow delete: if false;
+}
+
+match /bulletins/{bulletinId} {
+  function validBulletinAttachment(attachment) {
+    return hasValidMediaAttachmentShape(attachment)
+    && attachment.type in ["image", "gif", "video", "video_link"]
+    && (
+      attachment.type == "video_link"
+      && attachment.storagePath == null
+      && attachment.downloadUrl == null
+      && attachment.externalUrl is string
+      && attachment.provider == "youtube"
+      ||
+      attachment.type != "video_link"
+      && attachment.storagePath is string
+      && attachment.storagePath.matches(
+        "^bulletinMedia/" + groupId + "/" + bulletinId + "/" +
+        request.auth.uid + "/" + attachment.id + "/original\\.(jpg|png|webp|gif|mp4)$"
+      )
+      && attachment.downloadUrl is string
+      && attachment.externalUrl == null
+      && attachment.uploadedByUid == request.auth.uid
+      && attachment.provider == null
+    );
+  }
+
+  function validBulletinAttachments(data) {
+    return data.attachments is list
+      && data.attachments.size() <= 4
+      && data.attachmentCount == data.attachments.size()
+      && (data.attachments.size() < 1 || validBulletinAttachment(data.attachments[0]))
+      && (data.attachments.size() < 2 || validBulletinAttachment(data.attachments[1]))
+      && (data.attachments.size() < 3 || validBulletinAttachment(data.attachments[2]))
+      && (data.attachments.size() < 4 || validBulletinAttachment(data.attachments[3]));
+  }
+
+  allow read: if isGroupMember(groupId);
+
+  allow create: if isGroupModeratorOrAdmin(groupId)
+    && request.resource.data.groupId == groupId
+    && request.resource.data.authorUid == request.auth.uid
+    && request.resource.data.title is string
+    && request.resource.data.title.size() > 0
+    && request.resource.data.title.size() <= 120
+    && request.resource.data.body is string
+    && request.resource.data.body.size() > 0
+    && request.resource.data.body.size() <= 4000
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs is number
+    && request.resource.data.hiddenByModeration == false
+    && request.resource.data.deletedByAuthor == false
+    && request.resource.data.deletedAtMs == null
+    && validBulletinAttachments(request.resource.data);
+
+  allow update: if isGroupModeratorOrAdmin(groupId)
+    && request.resource.data.groupId == resource.data.groupId
+    && request.resource.data.authorUid == resource.data.authorUid
+    && request.resource.data.createdAtMs == resource.data.createdAtMs
+    && (
+      !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        "attachments", "attachmentCount"
+      ])
+      || validBulletinAttachments(request.resource.data)
+    );
+
+  allow delete: if isGroupAdmin(groupId);
+
+  match /comments/{commentId} {
+    function validBulletinCommentAttachment(attachment) {
+      return hasValidMediaAttachmentShape(attachment)
+      && hasValidUploadedMediaFields(attachment)
+      && attachment.storagePath.matches(
+        "^bulletinCommentMedia/" + groupId + "/" + bulletinId + "/" + commentId +
+        "/" + request.auth.uid + "/" + attachment.id + "/original\\.(jpg|png|webp|gif|mp4)$"
+      )
+      ;
+    }
+
+    function validBulletinCommentAttachments(data) {
+      return hasValidTwoMediaAttachmentList(data)
+        && (data.attachments.size() < 1 || validBulletinCommentAttachment(data.attachments[0]))
+        && (data.attachments.size() < 2 || validBulletinCommentAttachment(data.attachments[1]));
+    }
+
+    allow read: if isGroupMember(groupId);
+
+    allow create: if isGroupMember(groupId)
+      && exists(/databases/$(database)/documents/groups/$(groupId)/bulletins/$(bulletinId))
+      && get(/databases/$(database)/documents/groups/$(groupId)/bulletins/$(bulletinId)).data.hiddenByModeration != true
+      && (
+        !("deletedByAuthor" in get(/databases/$(database)/documents/groups/$(groupId)/bulletins/$(bulletinId)).data)
+        || get(/databases/$(database)/documents/groups/$(groupId)/bulletins/$(bulletinId)).data.deletedByAuthor != true
+      )
+      && request.resource.data.groupId == groupId
+      && request.resource.data.bulletinId == bulletinId
+      && request.resource.data.authorUid == request.auth.uid
+      && request.resource.data.body is string
+      && request.resource.data.body.size() <= 1000
+      && (request.resource.data.body.size() > 0 || request.resource.data.attachmentCount > 0)
+      && request.resource.data.createdAtMs is number
+      && request.resource.data.updatedAtMs is number
+      && request.resource.data.hiddenByModeration == false
+      && validBulletinCommentAttachments(request.resource.data);
+
+    allow update: if isGroupModeratorOrAdmin(groupId);
+
+    allow delete: if isGroupAdmin(groupId);
+  }
+}
+
+match /joinRequests/{requestUid} {
+  allow get: if signedIn()
+  && (
+    requestUid == request.auth.uid
+    || isGroupModeratorOrAdmin(groupId)
+  );
+
+allow list: if signedIn()
+  && (
+    resource.data.uid == request.auth.uid
+    || isGroupModeratorOrAdmin(groupId)
+  );
+
+  allow create: if signedIn()
+    && requestUid == request.auth.uid
+		&& !isBlockedFromGroup(groupId, requestUid)
+    && request.resource.data.groupId == groupId
+    && request.resource.data.uid == request.auth.uid
+    && request.resource.data.status == "pending"
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs is number
+    && hasValidOptionalProfile(request.resource.data)
+   && (
+  !("message" in request.resource.data)
+  || request.resource.data.message == null
+  || (
+    request.resource.data.message is string
+    && request.resource.data.message.size() <= 500
+  )
+)
+&& (
+  !("groupName" in request.resource.data)
+  || request.resource.data.groupName == null
+  || request.resource.data.groupName is string
+);
+
+   allow update: if (
+    (
+      signedIn()
+      && requestUid == request.auth.uid
+      && resource.data.uid == request.auth.uid
+      && resource.data.status == "pending"
+      && request.resource.data.status == "cancelled"
+      && request.resource.data.groupId == resource.data.groupId
+      && request.resource.data.uid == resource.data.uid
+      && request.resource.data.createdAtMs == resource.data.createdAtMs
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "status",
+        "updatedAtMs",
+        "updatedAt"
+      ])
+      && request.resource.data.updatedAtMs is number
+    )
+    || (
+      signedIn()
+      && requestUid == request.auth.uid
+      && resource.data.uid == request.auth.uid
+      && (
+        resource.data.status == "declined"
+        || resource.data.status == "cancelled"
+      )
+      && request.resource.data.status == "pending"
+      && request.resource.data.groupId == resource.data.groupId
+      && request.resource.data.uid == resource.data.uid
+      && request.resource.data.createdAtMs is number
+      && request.resource.data.updatedAtMs is number
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+  "status",
+  "email",
+  "displayName",
+  "message",
+  "groupName",
+  "createdAtMs",
+  "updatedAtMs",
+  "updatedAt",
+  "reviewedByUid",
+  "reviewedByName",
+  "reviewedAtMs"
+])
+      && hasValidOptionalProfile(request.resource.data)
+      && request.resource.data.reviewedByUid == null
+      && request.resource.data.reviewedByName == null
+      && request.resource.data.reviewedAtMs == null
+      && (
+        !("message" in request.resource.data)
+        || request.resource.data.message == null
+        || (
+          request.resource.data.message is string
+          && request.resource.data.message.size() <= 500
+        )
+      )
+			&& (
+  !("groupName" in request.resource.data)
+  || request.resource.data.groupName == null
+  || request.resource.data.groupName is string
+)
+    )
+    || (
+      isGroupAdmin(groupId)
+      && request.resource.data.groupId == resource.data.groupId
+      && request.resource.data.uid == resource.data.uid
+      && request.resource.data.createdAtMs == resource.data.createdAtMs
+      && request.resource.data.status in [
+        "approved",
+        "declined"
+      ]
+      && request.resource.data.reviewedByUid == request.auth.uid
+      && request.resource.data.updatedAtMs is number
+      && request.resource.data.reviewedAtMs is number
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        "status",
+        "updatedAtMs",
+        "updatedAt",
+        "reviewedByUid",
+        "reviewedByName",
+        "reviewedAtMs"
+      ])
+    )
+  );
+
+  allow delete: if false;
+}
+
+match /invites/{inviteId} {
+ allow create: if isGroupAdmin(groupId)
+  && request.resource.data.groupId == groupId
+  && request.resource.data.invitedEmail is string
+  && request.resource.data.invitedByUid == request.auth.uid
+  && request.resource.data.status == "pending"
+  && (
+    request.resource.data.role == "admin"
+		|| request.resource.data.role == "moderator"
+    || request.resource.data.role == "member"
+    || request.resource.data.role == "viewer"
+  );
+
+allow read: if isGroupAdmin(groupId)
+  || (
+    signedIn()
+    && resource.data.invitedEmail == request.auth.token.email
+  );
+
+ allow update: if isGroupAdmin(groupId)
+  || (
+    signedIn()
+    && resource.data.status == "pending"
+		&& !isBlockedFromGroup(groupId, request.auth.uid)
+    && resource.data.invitedEmail == request.auth.token.email
+    && (
+      (
+        request.resource.data.status == "accepted"
+        && request.resource.data.acceptedByUid == request.auth.uid
+      )
+      || request.resource.data.status == "declined"
+    )
+  );
+
+allow delete: if isGroupAdmin(groupId);
+}
+
+match /adminLogs/{logId} {
+ allow read: if isGroupModeratorOrAdmin(groupId);
+
+    allow create: if isGroupModeratorOrAdmin(groupId)
+    && request.resource.data.groupId == groupId
+    && request.resource.data.actorUid == request.auth.uid
+    && request.resource.data.action is string
+    && !(request.resource.data.action in [
+      "routine_participant_status_corrected",
+      "routine_participant_excused"
+    ])
+    && request.resource.data.message is string
+    && request.resource.data.message.size() > 0
+    && request.resource.data.message.size() <= 500
+    && request.resource.data.createdAtMs is number;
+
+  allow update, delete: if false;
+}
+
+match /historyEvents/{historyEventId} {
+  allow read: if isGroupMember(groupId)
+    && !isBlockedFromGroup(groupId, request.auth.uid);
+
+  allow create, update, delete: if false;
+}
+
+match /reports/{reportId} {
+  allow read: if isGroupModeratorOrAdmin(groupId);
+
+  allow create: if isGroupMember(groupId)
+    && request.resource.data.groupId == groupId
+    && request.resource.data.reporterUid == request.auth.uid
+    && request.resource.data.targetType is string
+    && request.resource.data.targetId is string
+    && request.resource.data.targetId.size() > 0
+    && (
+      (
+        request.resource.data.targetType == "dm_message"
+        && request.resource.data.dmId is string
+        && exists(/databases/$(database)/documents/groupDms/$(request.resource.data.dmId))
+        && get(/databases/$(database)/documents/groupDms/$(request.resource.data.dmId)).data.groupId == groupId
+        && request.auth.uid in get(/databases/$(database)/documents/groupDms/$(request.resource.data.dmId)).data.participantUids
+      )
+      ||
+      (
+        request.resource.data.targetType == "conversation_message"
+        && request.resource.data.conversationId is string
+        && exists(/databases/$(database)/documents/groupConversations/$(request.resource.data.conversationId))
+        && get(/databases/$(database)/documents/groupConversations/$(request.resource.data.conversationId)).data.groupId == groupId
+        && request.auth.uid in get(/databases/$(database)/documents/groupConversations/$(request.resource.data.conversationId)).data.memberUids
+      )
+      ||
+      (
+        !(request.resource.data.targetType in ["dm_message", "conversation_message"])
+      )
+    )
+    && (
+      !("targetAuthorUid" in request.resource.data)
+      || request.resource.data.targetAuthorUid == null
+      || request.resource.data.targetAuthorUid is string
+    )
+    && request.resource.data.reason is string
+    && request.resource.data.reason in [
+      "spam",
+      "harassment",
+      "inappropriate",
+      "misleading",
+      "other"
+    ]
+    && request.resource.data.status == "open"
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs is number
+    && (
+      !("dmId" in request.resource.data)
+      || request.resource.data.dmId == null
+      || request.resource.data.dmId is string
+    )
+    && (
+      !("conversationId" in request.resource.data)
+      || request.resource.data.conversationId == null
+      || request.resource.data.conversationId is string
+    )
+    && (
+      !("note" in request.resource.data)
+      || request.resource.data.note == null
+      || (
+        request.resource.data.note is string
+        && request.resource.data.note.size() <= 1000
+      )
+    )
+    && (
+      !("reporterName" in request.resource.data)
+      || request.resource.data.reporterName == null
+      || request.resource.data.reporterName is string
+    )
+    && (
+      !("reporterEmail" in request.resource.data)
+      || request.resource.data.reporterEmail == null
+      || request.resource.data.reporterEmail is string
+    )
+    && (
+      !("targetAuthorName" in request.resource.data)
+      || request.resource.data.targetAuthorName == null
+      || request.resource.data.targetAuthorName is string
+    )
+    && (
+      !("targetPreviewTitle" in request.resource.data)
+      || request.resource.data.targetPreviewTitle == null
+      || (
+        request.resource.data.targetPreviewTitle is string
+        && request.resource.data.targetPreviewTitle.size() <= 240
+      )
+    )
+    && (
+      !("targetPreviewBody" in request.resource.data)
+      || request.resource.data.targetPreviewBody == null
+      || (
+        request.resource.data.targetPreviewBody is string
+        && request.resource.data.targetPreviewBody.size() <= 2000
+      )
+    );
+
+   allow update: if isGroupModeratorOrAdmin(groupId)
+    && resource.data.groupId == groupId
+    && request.resource.data.groupId == groupId
+    && resource.data.reporterUid != request.auth.uid
+    && (
+      !("targetAuthorUid" in resource.data)
+      || resource.data.targetAuthorUid == null
+      || resource.data.targetAuthorUid != request.auth.uid
+    )
+    && request.resource.data.reporterUid == resource.data.reporterUid
+&& request.resource.data.targetType == resource.data.targetType
+&& request.resource.data.targetId == resource.data.targetId
+&& request.resource.data.createdAtMs == resource.data.createdAtMs
+&& (
+  !("dmId" in resource.data)
+  || request.resource.data.dmId == resource.data.dmId
+)
+&& (
+  !("conversationId" in resource.data)
+  || request.resource.data.conversationId == resource.data.conversationId
+)
+&& (
+  !("targetAuthorUid" in resource.data)
+  || request.resource.data.targetAuthorUid == resource.data.targetAuthorUid
+)
+    && request.resource.data.status in [
+      "open",
+      "reviewing",
+      "resolved",
+      "dismissed"
+    ]
+    && request.resource.data.updatedAtMs is number
+&& request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+  "status",
+  "updatedAtMs",
+  "updatedAt",
+  "moderatorNote",
+  "resolutionNote",
+  "reviewedByUid",
+  "reviewedByName",
+  "reviewedAtMs",
+  "lastActionType",
+  "lastActionAtMs",
+  "lastActionByUid",
+  "lastActionByName"
+])
+    && (
+      !("moderatorNote" in request.resource.data)
+      || request.resource.data.moderatorNote == null
+      || (
+        request.resource.data.moderatorNote is string
+        && request.resource.data.moderatorNote.size() <= 1000
+      )
+    )
+&& (
+  !("resolutionNote" in request.resource.data)
+  || request.resource.data.resolutionNote == null
+  || (
+    request.resource.data.resolutionNote is string
+    && request.resource.data.resolutionNote.size() <= 1000
+  )
+)
+&& (
+  !("lastActionType" in request.resource.data)
+  || request.resource.data.lastActionType == null
+  || request.resource.data.lastActionType in [
+  "reviewing",
+  "resolved",
+  "dismissed",
+  "hidden",
+  "restored"
+]
+)
+&& (
+  !("resolutionNote" in request.resource.data)
+  || request.resource.data.resolutionNote == null
+  || (
+    request.resource.data.resolutionNote is string
+    && request.resource.data.resolutionNote.size() <= 1000
+  )
+);
+
+  allow delete: if false;
+}
+
+  match /sharedGoals/{goalId} {
+  allow read: if isGroupMember(groupId);
+
+  allow create, update: if isGroupAdmin(groupId)
+    && request.resource.data.goalId == goalId
+    && request.resource.data.groupId == groupId
+    && request.resource.data.sharedByUid == request.auth.uid
+    && (
+      request.resource.data.status == "active"
+      || request.resource.data.status == "removed"
+    );
+
+  allow delete: if isGroupOwner(groupId);
+
+  match /comments/{commentId} {
+    function validGoalCommentAttachment(attachment) {
+      return hasValidMediaAttachmentShape(attachment)
+      && hasValidUploadedMediaFields(attachment)
+      && attachment.storagePath.matches(
+        "^sharedGoalCommentMedia/" + groupId + "/" + goalId + "/" + commentId +
+        "/" + request.auth.uid + "/" + attachment.id + "/original\\.(jpg|png|webp|gif|mp4)$"
+      )
+      ;
+    }
+
+    function validGoalCommentAttachments(data) {
+      return hasValidTwoMediaAttachmentList(data)
+        && (data.attachments.size() < 1 || validGoalCommentAttachment(data.attachments[0]))
+        && (data.attachments.size() < 2 || validGoalCommentAttachment(data.attachments[1]));
+    }
+
+    allow read: if isGroupMember(groupId);
+
+    allow create: if isGroupMember(groupId)
+      && exists(/databases/$(database)/documents/groups/$(groupId)/sharedGoals/$(goalId))
+      && get(/databases/$(database)/documents/groups/$(groupId)/sharedGoals/$(goalId)).data.status == "active"
+      && request.resource.data.groupId == groupId
+      && request.resource.data.goalId == goalId
+      && request.resource.data.authorUid == request.auth.uid
+      && request.resource.data.body is string
+      && request.resource.data.body.size() <= 1000
+      && (request.resource.data.body.size() > 0 || request.resource.data.attachmentCount > 0)
+      && request.resource.data.createdAtMs is number
+      && request.resource.data.updatedAtMs is number
+      && validGoalCommentAttachments(request.resource.data);
+
+    allow update: if isGroupMember(groupId)
+      && resource.data.authorUid == request.auth.uid
+      && request.resource.data.authorUid == resource.data.authorUid
+      && request.resource.data.groupId == groupId
+      && request.resource.data.goalId == goalId
+      && request.resource.data.attachments == resource.data.attachments
+      && request.resource.data.attachmentCount == resource.data.attachmentCount
+      && request.resource.data.body is string
+      && request.resource.data.body.size() > 0
+      && request.resource.data.body.size() <= 1000;
+
+    allow delete: if isGroupAdmin(groupId)
+      || resource.data.authorUid == request.auth.uid;
+
+match /reactions/{reactionUid} {
+  allow read: if isGroupMember(groupId);
+
+  allow create, update: if isGroupMember(groupId)
+    && reactionUid == request.auth.uid
+    && request.resource.data.uid == request.auth.uid
+    && request.resource.data.groupId == groupId
+    && request.resource.data.goalId == goalId
+    && request.resource.data.commentId == commentId
+    && request.resource.data.emoji is string
+    && request.resource.data.emoji.size() > 0
+    && request.resource.data.emoji.size() <= 8
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs is number
+    && hasValidOptionalProfile(request.resource.data);
+
+  allow delete: if isGroupMember(groupId)
+    && reactionUid == request.auth.uid;
+}
+  }
+
+match /typing/{typingUid} {
+  allow read: if isGroupMember(groupId);
+
+  allow create, update: if isGroupMember(groupId)
+    && typingUid == request.auth.uid
+    && request.resource.data.uid == request.auth.uid
+    && request.resource.data.groupId == groupId
+    && request.resource.data.goalId == goalId
+    && request.resource.data.updatedAtMs is number
+    && hasValidOptionalProfile(request.resource.data);
+
+  allow delete: if typingUid == request.auth.uid || isGroupAdmin(groupId);
+}
+}
+
+match /tasks/{taskId} {
+  allow read: if isGroupMember(groupId);
+
+  allow create: if isGroupMember(groupId)
+    && request.resource.data.groupId == groupId
+    && hasValidTaskFields(request.resource.data)
+    && request.resource.data.status == "unclaimed"
+    && request.resource.data.createdByUid == request.auth.uid
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs is number;
+
+  allow update: if isGroupMember(groupId)
+    && request.resource.data.groupId == groupId
+    && resource.data.groupId == groupId
+    && request.resource.data.createdByUid == resource.data.createdByUid
+    && request.resource.data.createdAtMs == resource.data.createdAtMs
+    && hasValidTaskFields(request.resource.data)
+    && request.resource.data.updatedAtMs is number
+		&& request.resource.data.updatedAt != null
+    && (
+      request.resource.data.status == "unclaimed"
+      || request.resource.data.status == "claimed"
+      || request.resource.data.status == "in_progress"
+      || request.resource.data.status == "completed"
+    )
+   && (
+  isGroupAdmin(groupId)
+  || resource.data.createdByUid == request.auth.uid
+  || resource.data.claimedByUid == request.auth.uid
+  || resource.data.assignedToUid == request.auth.uid
+  || (
+    resource.data.status == "unclaimed"
+    && request.resource.data.status == "claimed"
+    && request.resource.data.claimedByUid == request.auth.uid
+  )
+);
+
+  allow delete: if isGroupAdmin(groupId)
+    || resource.data.createdByUid == request.auth.uid;
+
+
+	match /comments/{commentId} {
+  allow read: if isGroupMember(groupId);
+
+  allow create: if isGroupMember(groupId)
+    && request.resource.data.groupId == groupId
+    && request.resource.data.taskId == taskId
+    && request.resource.data.authorUid == request.auth.uid
+    && request.resource.data.body is string
+    && request.resource.data.body.size() > 0
+    && request.resource.data.body.size() <= 1000
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs is number;
+
+  allow update: if isGroupMember(groupId)
+    && resource.data.authorUid == request.auth.uid
+    && request.resource.data.authorUid == resource.data.authorUid
+    && request.resource.data.groupId == groupId
+    && request.resource.data.taskId == taskId
+    && request.resource.data.body is string
+    && request.resource.data.body.size() > 0
+    && request.resource.data.body.size() <= 1000
+    && request.resource.data.createdAtMs == resource.data.createdAtMs
+    && request.resource.data.updatedAtMs is number;
+
+  allow delete: if isGroupAdmin(groupId)
+    || resource.data.authorUid == request.auth.uid;
+}
+}
+
+match /activity/{activityId} {
+  allow read: if isGroupMember(groupId)
+  && (
+    !("hiddenByModeration" in resource.data)
+    || resource.data.hiddenByModeration != true
+    || isGroupModeratorOrAdmin(groupId)
+  );
+
+  allow create: if isGroupMember(groupId)
+    && request.resource.data.groupId == groupId
+    && request.resource.data.actorUid == request.auth.uid
+    && !(request.resource.data.type in [
+      "occurrence_completed",
+      "occurrence_skipped",
+      "occurrence_reopened"
+    ])
+    && request.resource.data.message is string
+    && request.resource.data.createdAtMs is number;
+
+
+
+  allow update: if isGroupModeratorOrAdmin(groupId)
+  && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+    "hiddenByModeration",
+    "hiddenAtMs",
+    "hiddenByUid",
+    "hiddenByName",
+    "hiddenReason",
+    "hiddenReportId"
+  ])
+  && request.resource.data.hiddenByModeration == true
+  && request.resource.data.hiddenByUid == request.auth.uid
+  && request.resource.data.hiddenAtMs is number;
+
+allow delete: if false;
+
+  match /reactions/{reactionUid} {
+    allow read: if isGroupMember(groupId);
+
+    allow create, update: if isGroupMember(groupId)
+      && reactionUid == request.auth.uid
+      && request.resource.data.uid == request.auth.uid
+      && request.resource.data.groupId == groupId
+      && request.resource.data.activityId == activityId
+      && request.resource.data.emoji is string
+      && request.resource.data.emoji in ["👍", "🎉", "👀"]
+      && request.resource.data.createdAtMs is number
+      && request.resource.data.updatedAtMs is number
+      && hasValidOptionalProfile(request.resource.data);
+
+    allow delete: if isGroupMember(groupId)
+      && reactionUid == request.auth.uid;
+  }
+}
+}
+
+match /groupConversations/{conversationId} {
+  function isConversationMember() {
+    return canUseThread(resource.data, resource.data.memberUids);
+  }
+
+  function isIncomingConversationMember() {
+    return signedIn()
+      && request.auth.uid in request.resource.data.memberUids
+      && request.resource.data.groupId is string
+      && isGroupMember(request.resource.data.groupId);
+  }
+
+  function canUseExistingConversation(conversationId) {
+    return exists(/databases/$(database)/documents/groupConversations/$(conversationId))
+      && canUseThread(
+        get(/databases/$(database)/documents/groupConversations/$(conversationId)).data,
+        get(/databases/$(database)/documents/groupConversations/$(conversationId)).data.memberUids
+      );
+  }
+
+  allow get: if signedIn()
+    && (
+      isConversationMember()
+      || !exists(/databases/$(database)/documents/groupConversations/$(conversationId))
+    );
+
+allow list: if isConversationMember();
+
+  allow create: if isIncomingConversationMember()
+    && hasValidConversationTitle(request.resource.data)
+    && request.resource.data.memberUids is list
+    && request.resource.data.memberUids.size() >= 2
+    && request.resource.data.memberUids.size() <= 25
+    && request.resource.data.memberMap[request.auth.uid] == true
+&& request.resource.data.lastAddedMemberUid is string
+&& request.resource.data.lastAddedMemberUid in request.resource.data.memberUids
+&& request.resource.data.lastAddedMemberUid != request.auth.uid
+&& exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.resource.data.lastAddedMemberUid))
+&& get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.resource.data.lastAddedMemberUid)).data.status == "active"
+&& !exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/blockedUsers/$(request.resource.data.lastAddedMemberUid))
+    && request.resource.data.createdByUid == request.auth.uid
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs is number
+    && request.resource.data.archived == false
+ && request.resource.data.lastReadByUid[request.auth.uid] is number;
+
+  allow update: if isConversationMember()
+    && request.resource.data.groupId == resource.data.groupId
+    && request.resource.data.createdByUid == resource.data.createdByUid
+    && request.resource.data.createdAtMs == resource.data.createdAtMs
+    && (
+      (
+        request.resource.data.memberUids == resource.data.memberUids
+        && request.resource.data.memberMap == resource.data.memberMap
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "updatedAtMs",
+          "updatedAt",
+          "title",
+          "subject"
+        ])
+        && request.resource.data.archived == resource.data.archived
+        && hasValidConversationTitle(request.resource.data)
+      )
+      ||
+      (
+        request.resource.data.memberUids == resource.data.memberUids
+        && request.resource.data.memberMap == resource.data.memberMap
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "updatedAtMs",
+          "lastMessagePreview",
+          "lastMessageAtMs",
+          "lastMessageSenderUid"
+         
+        ])
+        && request.resource.data.archived == resource.data.archived
+      
+				&& request.resource.data.lastMessageSenderUid == request.auth.uid
+&& request.resource.data.lastMessageAtMs is number
+&& request.resource.data.updatedAtMs is number
+      )
+      ||
+      (
+        request.resource.data.memberUids == resource.data.memberUids
+        && request.resource.data.memberMap == resource.data.memberMap
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+  "lastReadByUid",
+  "updatedAt"
+])
+&& request.resource.data.lastReadByUid[request.auth.uid] is number
+      )
+      ||
+(
+  request.resource.data.memberUids == resource.data.memberUids
+  && request.resource.data.memberMap == resource.data.memberMap
+  && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+    "archivedByUid",
+    "archivedAtMsByUid",
+    "updatedAtMs",
+    "updatedAt"
+  ])
+&& request.resource.data.archivedByUid[request.auth.uid] is bool
+&& (
+  request.resource.data.archivedByUid[request.auth.uid] == false
+  || request.resource.data.archivedAtMsByUid[request.auth.uid] is number
+)
+  && request.resource.data.updatedAtMs is number
+)
+      ||
+(
+request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+  "memberUids",
+  "memberMap",
+  "lastReadByUid",
+  "lastLeftByUid",
+  "lastLeftAtMs",
+  "updatedAtMs",
+  "updatedAt"
+])
+  && request.auth.uid in resource.data.memberUids
+  && !(request.auth.uid in request.resource.data.memberUids)
+  && request.resource.data.lastLeftByUid == request.auth.uid
+  && request.resource.data.lastLeftAtMs is number
+  && request.resource.data.updatedAtMs is number
+)
+      ||
+      (
+request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+  "memberUids",
+  "memberMap",
+  "lastAddedMemberUid",
+  "lastMembersUpdatedByUid",
+  "lastMembersUpdatedAtMs",
+  "updatedAtMs",
+  "updatedAt"
+])
+        && request.auth.uid in resource.data.memberUids
+        && request.auth.uid in request.resource.data.memberUids
+        && request.resource.data.memberUids is list
+        && request.resource.data.memberUids.size() >= 2
+        && request.resource.data.memberUids.size() <= 25
+        && request.resource.data.memberMap[request.auth.uid] == true
+        && request.resource.data.lastMembersUpdatedByUid == request.auth.uid
+&& (
+  !("lastAddedMemberUid" in request.resource.data)
+  || request.resource.data.lastAddedMemberUid == null
+  || (
+    request.resource.data.lastAddedMemberUid is string
+    && request.resource.data.lastAddedMemberUid in request.resource.data.memberUids
+    && exists(/databases/$(database)/documents/groups/$(resource.data.groupId)/members/$(request.resource.data.lastAddedMemberUid))
+    && get(/databases/$(database)/documents/groups/$(resource.data.groupId)/members/$(request.resource.data.lastAddedMemberUid)).data.status == "active"
+    && !exists(/databases/$(database)/documents/groups/$(resource.data.groupId)/blockedUsers/$(request.resource.data.lastAddedMemberUid))
+  )
+)
+        && request.resource.data.lastMembersUpdatedAtMs is number
+        && request.resource.data.updatedAtMs is number
+      )
+    );
+  allow delete: if false;
+
+  match /typing/{typingUid} {
+    allow read: if canUseExistingConversation(conversationId);
+
+    allow create, update: if canUseExistingConversation(conversationId)
+      && typingUid == request.auth.uid
+      && request.resource.data.uid == request.auth.uid
+      && request.resource.data.conversationId == conversationId
+      && request.resource.data.groupId == get(/databases/$(database)/documents/groupConversations/$(conversationId)).data.groupId
+      && request.resource.data.updatedAtMs is number
+      && hasValidOptionalProfile(request.resource.data);
+
+allow delete: if canUseExistingConversation(conversationId)
+  && typingUid == request.auth.uid;
+  }
+
+  match /messages/{messageId} {
+    function validConversationMessageAttachment(attachment) {
+      return hasValidMediaAttachmentShape(attachment)
+      && hasValidUploadedMediaFields(attachment)
+      && attachment.storagePath.matches(
+        "^groupConversationMedia/" +
+        get(/databases/$(database)/documents/groupConversations/$(conversationId)).data.groupId +
+        "/" + conversationId + "/" + messageId + "/" + request.auth.uid +
+        "/" + attachment.id + "/original\\.(jpg|png|webp|gif|mp4)$"
+      )
+      ;
+    }
+
+    function validConversationMessageAttachments(data) {
+      return hasValidFourMediaAttachmentList(data)
+        && (data.attachments.size() < 1 || validConversationMessageAttachment(data.attachments[0]))
+        && (data.attachments.size() < 2 || validConversationMessageAttachment(data.attachments[1]))
+        && (data.attachments.size() < 3 || validConversationMessageAttachment(data.attachments[2]))
+        && (data.attachments.size() < 4 || validConversationMessageAttachment(data.attachments[3]));
+    }
+
+    allow read: if canUseExistingConversation(conversationId);
+
+    allow create: if canUseExistingConversation(conversationId)
+      && request.resource.data.conversationId == conversationId
+      && request.resource.data.groupId == get(/databases/$(database)/documents/groupConversations/$(conversationId)).data.groupId
+      && validConversationMessageAttachments(request.resource.data)
+      && hasValidMessageCreateCore(request.resource.data);
+
+allow update: if canUseExistingConversation(conversationId)
+  && hasValidMessageAuthorUpdate();
+
+    allow update: if signedIn()
+      && exists(/databases/$(database)/documents/groupConversations/$(conversationId))
+      && get(/databases/$(database)/documents/groupConversations/$(conversationId)).data.groupId is string
+      && isGroupModeratorOrAdmin(get(/databases/$(database)/documents/groupConversations/$(conversationId)).data.groupId)
+      && hasValidMessageModerationUpdate();
+
+    allow delete: if false;
+
+    match /reactions/{reactionUid} {
+      allow read: if canUseExistingConversation(conversationId);
+
+      allow create, update: if canUseExistingConversation(conversationId)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.conversationId == conversationId
+        && request.resource.data.messageId == messageId
+        && request.resource.data.emoji is string
+        && request.resource.data.emoji in [
+          "👍",
+          "❤️",
+          "🎉",
+          "👀"
+        ]
+        && request.resource.data.createdAtMs is number
+        && request.resource.data.updatedAtMs is number
+        && hasValidOptionalProfile(request.resource.data);
+
+      allow delete: if canUseExistingConversation(conversationId)
+        && resource.data.uid == request.auth.uid;
+    }
+  }
+}
+
+match /groupDms/{dmId} {
+function isDmParticipant() {
+  return canUseThread(resource.data, resource.data.participantUids);
+}
+
+  function isIncomingDmParticipant() {
+    return signedIn()
+      && request.auth.uid in request.resource.data.participantUids;
+  }
+
+  function isActiveDmGroupMemberUid(groupId, uid) {
+    return signedIn()
+      && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(uid))
+      && get(/databases/$(database)/documents/groups/$(groupId)/members/$(uid)).data.status == "active"
+      && !exists(/databases/$(database)/documents/groups/$(groupId)/blockedUsers/$(uid));
+  }
+function canUseExistingDm(dmId) {
+  return exists(/databases/$(database)/documents/groupDms/$(dmId))
+    && canUseThread(
+      get(/databases/$(database)/documents/groupDms/$(dmId)).data,
+      get(/databases/$(database)/documents/groupDms/$(dmId)).data.participantUids
+    );
+}
+
+allow get: if signedIn()
+  && (
+    !exists(/databases/$(database)/documents/groupDms/$(dmId))
+    || isDmParticipant()
+  );
+
+allow list: if signedIn()
+  && request.auth.uid in resource.data.participantUids;
+
+ allow create: if isIncomingDmParticipant()
+  && request.resource.data.groupId is string
+  && isGroupMember(request.resource.data.groupId)
+  && request.resource.data.participantUids is list
+  && request.resource.data.participantUids.size() == 2
+  && request.auth.uid in request.resource.data.participantUids
+  && request.resource.data.participantMap[request.auth.uid] == true
+  && request.resource.data.participantMap[request.resource.data.participantUids[0]] == true
+  && request.resource.data.participantMap[request.resource.data.participantUids[1]] == true
+  && isActiveDmGroupMemberUid(request.resource.data.groupId, request.resource.data.participantUids[0])
+  && isActiveDmGroupMemberUid(request.resource.data.groupId, request.resource.data.participantUids[1])
+  && request.resource.data.createdByUid == request.auth.uid
+  && request.resource.data.createdAtMs is number
+  && request.resource.data.updatedAtMs is number
+  && (
+    !("groupName" in request.resource.data)
+    || request.resource.data.groupName == null
+    || request.resource.data.groupName is string
+  )
+  && (
+    !("subject" in request.resource.data)
+    || request.resource.data.subject == null
+    || (
+      request.resource.data.subject is string
+      && request.resource.data.subject.size() <= 160
+    )
+  );
+  allow update: if isDmParticipant()
+    && request.resource.data.groupId == resource.data.groupId
+    && request.resource.data.participantUids == resource.data.participantUids
+    && request.resource.data.participantMap == resource.data.participantMap
+    && request.resource.data.createdByUid == resource.data.createdByUid
+    && request.resource.data.createdAtMs == resource.data.createdAtMs
+    && (
+      (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "updatedAtMs",
+          "updatedAt",
+          "lastMessagePreview",
+          "lastMessageAtMs",
+          "lastMessageSenderUid"
+        ])
+        && request.resource.data.lastMessageSenderUid == request.auth.uid
+        && request.resource.data.lastMessageAtMs is number
+        && request.resource.data.updatedAtMs is number
+      )
+      ||
+      (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "lastReadByUid",
+          "updatedAt"
+        ])
+        && request.resource.data.lastReadByUid[request.auth.uid] is number
+      )
+      ||
+      (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "subject",
+          "updatedAtMs",
+          "updatedAt"
+        ])
+        && (
+          request.resource.data.subject == null
+          || (
+            request.resource.data.subject is string
+            && request.resource.data.subject.size() <= 160
+          )
+        )
+        && request.resource.data.updatedAtMs is number
+      )
+    );
+
+  allow delete: if false;
+
+allow update: if signedIn()
+  && request.auth.uid in resource.data.participantUids
+  && !(request.auth.uid in request.resource.data.participantUids)
+  && resource.data.groupId is string
+  && isGroupMember(resource.data.groupId)
+  && request.resource.data.groupId == resource.data.groupId
+  && request.resource.data.createdByUid == resource.data.createdByUid
+  && request.resource.data.createdAtMs == resource.data.createdAtMs
+  && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+    "participantUids",
+    "participantMap",
+    "lastReadByUid",
+    "lastLeftByUid",
+    "lastLeftAtMs",
+    "updatedAtMs",
+    "updatedAt"
+  ])
+  && request.resource.data.participantMap[request.auth.uid] == false
+  && request.resource.data.lastLeftByUid == request.auth.uid
+  && request.resource.data.lastLeftAtMs is number
+  && request.resource.data.updatedAtMs is number;
+
+  match /messages/{messageId} {
+function validDmMessageAttachment(attachment) {
+  return hasValidMediaAttachmentShape(attachment)
+  && hasValidUploadedMediaFields(attachment)
+  && attachment.storagePath.matches(
+    "^groupDmMedia/" +
+    get(/databases/$(database)/documents/groupDms/$(dmId)).data.groupId +
+    "/" + dmId + "/" + messageId + "/" + request.auth.uid +
+    "/" + attachment.id + "/original\\.(jpg|png|webp|gif|mp4)$"
+  )
+  ;
+}
+
+function validDmMessageAttachments(data) {
+  return hasValidFourMediaAttachmentList(data)
+    && (data.attachments.size() < 1 || validDmMessageAttachment(data.attachments[0]))
+    && (data.attachments.size() < 2 || validDmMessageAttachment(data.attachments[1]))
+    && (data.attachments.size() < 3 || validDmMessageAttachment(data.attachments[2]))
+    && (data.attachments.size() < 4 || validDmMessageAttachment(data.attachments[3]));
+}
+
+allow read: if canUseExistingDm(dmId);
+
+allow create: if canUseExistingDm(dmId)
+  && request.resource.data.dmId == dmId
+      && request.resource.data.groupId == get(/databases/$(database)/documents/groupDms/$(dmId)).data.groupId
+      && validDmMessageAttachments(request.resource.data)
+      && hasValidMessageCreateCore(request.resource.data);
+
+allow update: if canUseExistingDm(dmId)
+  && hasValidMessageAuthorUpdate();
+
+   allow update: if signedIn()
+  && exists(/databases/$(database)/documents/groupDms/$(dmId))
+  && get(/databases/$(database)/documents/groupDms/$(dmId)).data.groupId is string
+  && isGroupModeratorOrAdmin(get(/databases/$(database)/documents/groupDms/$(dmId)).data.groupId)
+  && hasValidMessageModerationUpdate();
+
+
+
+    allow delete: if false;
+match /reactions/{reactionUid} {
+
+  allow read: if canUseExistingDm(dmId);
+
+  allow create, update: if canUseExistingDm(dmId)
+
+    && request.resource.data.uid == request.auth.uid
+    && request.resource.data.dmId == dmId
+    && request.resource.data.messageId == messageId
+    && request.resource.data.emoji is string
+    && request.resource.data.emoji in [
+      "👍",
+      "❤️",
+      "🎉",
+      "👀"
+    ]
+    && request.resource.data.createdAtMs is number
+    && request.resource.data.updatedAtMs is number;
+
+  allow delete: if canUseExistingDm(dmId)
+  && resource.data.uid == request.auth.uid;
+}
+  }
+
+match /typing/{typingUid} {
+  allow read: if canUseExistingDm(dmId);
+
+  allow create, update: if canUseExistingDm(dmId)
+    && typingUid == request.auth.uid
+    && request.resource.data.uid == request.auth.uid
+    && request.resource.data.dmId == dmId
+    && request.resource.data.groupId == get(/databases/$(database)/documents/groupDms/$(dmId)).data.groupId
+    && request.resource.data.updatedAtMs is number;
+
+    allow delete: if canUseExistingDm(dmId)
+    && typingUid == request.auth.uid;
+}
+}
+
+match /userGroupInvites/{inviteMirrorId} {
+  allow create: if signedIn()
+    && request.resource.data.invitedByUid == request.auth.uid
+    && request.resource.data.status == "pending";
+
+  allow read: if signedIn()
+    && resource.data.invitedEmail == request.auth.token.email;
+
+ allow update: if signedIn()
+  && resource.data.status == "pending"
+  && resource.data.invitedEmail == request.auth.token.email
+  && (
+    (
+      request.resource.data.status == "accepted"
+      && request.resource.data.acceptedByUid == request.auth.uid
+    )
+    || request.resource.data.status == "declined"
+  );
+
+allow delete: if false;
+}
+
+match /groupMemberships/{membershipId} {
+allow create: if signedIn()
+  && request.resource.data.status == "active"
+  && request.resource.data.groupId is string
+  && (
+    (
+  request.resource.data.uid == request.auth.uid
+  && request.resource.data.role == "owner"
+)
+    ||(
+  request.resource.data.uid == request.auth.uid
+  && (
+    request.resource.data.role == "admin"
+        || request.resource.data.role == "moderator"
+        || request.resource.data.role == "member"
+        || request.resource.data.role == "viewer"
+      )
+      && request.resource.data.inviteId is string
+      && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/invites/$(request.resource.data.inviteId))
+      && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/invites/$(request.resource.data.inviteId)).data.status == "pending"
+      && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/invites/$(request.resource.data.inviteId)).data.invitedEmail == request.auth.token.email
+      && (
+        request.resource.data.role == get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/invites/$(request.resource.data.inviteId)).data.role
+        || (
+          request.resource.data.role == "member"
+          && !("role" in get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/invites/$(request.resource.data.inviteId)).data)
+        )
+      )
+    )
+ || (
+  request.resource.data.uid == request.auth.uid
+  && request.resource.data.role == "member"
+  && request.resource.data.joinSource == "open_discovery"
+	  && !isBlockedFromGroup(request.resource.data.groupId, request.auth.uid)
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.visibility == "searchable"
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.discoverable == true
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.isHiddenFromDiscovery != true
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.joinPolicy == "open"
+)
+|| (
+  request.resource.data.role == "member"
+  && request.resource.data.joinSource == "request_approved"
+  && !isBlockedFromGroup(request.resource.data.groupId, request.resource.data.uid)
+  && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.auth.uid))
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.auth.uid)).data.status == "active"
+  && (
+    get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.auth.uid)).data.role == "owner"
+    || get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.auth.uid)).data.role == "admin"
+  )
+  && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/joinRequests/$(request.resource.data.uid))
+  && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/joinRequests/$(request.resource.data.uid)).data.status == "pending"
+)
+  );
+
+  allow read: if signedIn()
+    && resource.data.uid == request.auth.uid;
+
+allow update: if (
+  signedIn()
+  && resource.data.groupId is string
+  && exists(/databases/$(database)/documents/groups/$(resource.data.groupId)/members/$(request.auth.uid))
+  && get(/databases/$(database)/documents/groups/$(resource.data.groupId)/members/$(request.auth.uid)).data.status == "active"
+  && (
+    get(/databases/$(database)/documents/groups/$(resource.data.groupId)/members/$(request.auth.uid)).data.role == "owner"
+    || get(/databases/$(database)/documents/groups/$(resource.data.groupId)/members/$(request.auth.uid)).data.role == "admin"
+  )
+  && resource.data.role != "owner"
+  && (
+    request.resource.data.status == "removed"
+    || request.resource.data.role == "admin"
+    || request.resource.data.role == "moderator"
+    || request.resource.data.role == "member"
+    || request.resource.data.role == "viewer"
+  )
+)
+|| (
+  signedIn()
+  && request.resource.data.uid == request.auth.uid
+  && resource.data.uid == request.auth.uid
+  && resource.data.status == "removed"
+  && request.resource.data.status == "active"
+  && request.resource.data.groupId == resource.data.groupId
+  && request.resource.data.inviteId is string
+  && exists(/databases/$(database)/documents/groups/$(resource.data.groupId)/invites/$(request.resource.data.inviteId))
+ && (
+  get(/databases/$(database)/documents/groups/$(resource.data.groupId)/invites/$(request.resource.data.inviteId)).data.status == "pending"
+  || (
+    get(/databases/$(database)/documents/groups/$(resource.data.groupId)/invites/$(request.resource.data.inviteId)).data.status == "accepted"
+    && get(/databases/$(database)/documents/groups/$(resource.data.groupId)/invites/$(request.resource.data.inviteId)).data.acceptedByUid == request.auth.uid
+  )
+)
+&& get(/databases/$(database)/documents/groups/$(resource.data.groupId)/invites/$(request.resource.data.inviteId)).data.invitedEmail == request.auth.token.email
+)
+|| (
+  signedIn()
+  && resource.data.uid == request.auth.uid
+  && request.resource.data.uid == resource.data.uid
+  && resource.data.status == "active"
+  && resource.data.role != "owner"
+  && request.resource.data.status == "removed"
+  && request.resource.data.groupId == resource.data.groupId
+  && request.resource.data.role == resource.data.role
+);
+
+allow delete: if false;
+}
+
+match /scheduledReminders/{reminderId} {
+  allow read: if signedIn() && resource.data.uid == request.auth.uid;
+
+  allow create: if signedIn()
+    && request.resource.data.uid == request.auth.uid
+    && request.resource.data.status == "scheduled"
+    && request.resource.data.reminderAtMs is number
+    && request.resource.data.goalId is string
+    && request.resource.data.subtaskId is string
+    && request.resource.data.expoPushToken is string;
+
+  allow update: if signedIn()
+    && resource.data.uid == request.auth.uid
+    && request.resource.data.uid == request.auth.uid;
+
+  allow delete: if false;
+}
+match /assignmentNotificationRequests/{requestId} {
+  allow create: if signedIn()
+    && request.resource.data.groupId is string
+    && request.resource.data.targetUid is string
+    && request.resource.data.actorUid == request.auth.uid
+    && request.resource.data.status == "queued"
+    && request.resource.data.createdAtMs is number
+    && (
+      (
+        request.resource.data.type == "task_assigned"
+        && request.resource.data.goalId is string
+        && request.resource.data.subtaskId is string
+        && canCreateSharedGoalAssignmentSideEffects(
+          request.resource.data.groupId,
+          request.resource.data.goalId,
+          request.resource.data.targetUid
+        )
+      )
+      ||
+      (
+        request.resource.data.type == "planning_board_card_assignment"
+        && request.resource.data.boardId is string
+        && request.resource.data.cardId is string
+        && canCreatePlanningBoardAssignmentSideEffects(
+          request.resource.data.groupId,
+          request.resource.data.boardId,
+          request.resource.data.cardId,
+          request.resource.data.targetUid
+        )
+      )
+    )
+&& (
+  !("idempotencyKey" in request.resource.data)
+  || request.resource.data.idempotencyKey == requestId
+)
+    && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/sharedGoals/$(request.resource.data.goalId));
+
+ allow get: if signedIn()
+  && (
+    resource.data.targetUid == request.auth.uid
+    || resource.data.actorUid == request.auth.uid
+  );
+
+allow list: if false;
+
+allow update: if signedIn()
+  && resource.data.status == "queued"
+  && request.resource.data.status == "queued"
+  && request.resource.data.idempotencyKey == requestId
+  && request.resource.data.actorUid == request.auth.uid
+  && request.resource.data.groupId is string
+  && request.resource.data.targetUid is string
+  && (
+    (
+      request.resource.data.type == "task_assigned"
+      && request.resource.data.goalId is string
+      && canCreateSharedGoalAssignmentSideEffects(
+        request.resource.data.groupId,
+        request.resource.data.goalId,
+        request.resource.data.targetUid
+      )
+    )
+    ||
+    (
+      request.resource.data.type == "planning_board_card_assignment"
+      && request.resource.data.boardId is string
+      && request.resource.data.cardId is string
+      && canCreatePlanningBoardAssignmentSideEffects(
+        request.resource.data.groupId,
+        request.resource.data.boardId,
+        request.resource.data.cardId,
+        request.resource.data.targetUid
+      )
+    )
+  );
+
+allow delete: if false;
+}
+match /mentionNotificationRequests/{requestId} {
+  allow create: if signedIn()
+    && request.resource.data.groupId is string
+    && request.resource.data.targetUid is string
+    && request.resource.data.actorUid == request.auth.uid
+    && request.resource.data.status == "queued"
+    && request.resource.data.type == "mention"
+    && request.resource.data.createdAtMs is number
+    && isGroupMember(request.resource.data.groupId)
+&& (
+  !("idempotencyKey" in request.resource.data)
+  || request.resource.data.idempotencyKey == requestId
+)
+    && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.resource.data.targetUid))
+    && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.resource.data.targetUid)).data.status == "active";
+
+  allow read: if signedIn()
+    && (
+      resource.data.targetUid == request.auth.uid
+      || resource.data.actorUid == request.auth.uid
+    );
+
+  allow update: if signedIn()
+  && resource.data.status == "queued"
+  && request.resource.data.status == "queued"
+  && request.resource.data.idempotencyKey == requestId
+  && request.resource.data.actorUid == request.auth.uid;
+
+allow delete: if false;
+}
+match /messageNotificationRequests/{requestId} {
+
+  allow create: if signedIn()
+    && request.resource.data.groupId is string
+    && request.resource.data.targetUid is string
+    && request.resource.data.actorUid == request.auth.uid
+    && request.resource.data.status == "queued"
+    && request.resource.data.createdAtMs is number
+    && isGroupMember(request.resource.data.groupId)
+    && (
+      request.resource.data.type == "dm_message"
+      || request.resource.data.type == "conversation_message"
+    )
+&& request.resource.data.idempotencyKey == requestId;
+
+allow get: if signedIn()
+  && (
+    requestId.matches("^dm_.*_push$")
+    || requestId.matches("^conversation_.*_push$")
+    || resource.data.targetUid == request.auth.uid
+    || resource.data.actorUid == request.auth.uid
+  );
+  allow list: if false;
+
+  allow update: if signedIn()
+    && resource.data.status == "queued"
+    && request.resource.data.status == "queued"
+    && request.resource.data.actorUid == request.auth.uid
+    && request.resource.data.groupId == resource.data.groupId
+    && request.resource.data.targetUid == resource.data.targetUid
+&& request.resource.data.idempotencyKey == requestId;
+
+  allow delete: if false;
+}
+match /routineTransitionEvents/{eventId} {
+  allow read, create, update, delete: if false;
+}
+match /routineNotificationRequests/{requestId} {
+  allow read, create, update, delete: if false;
+}
+match /plannerGenerationRequests/{requestId} {
+  allow read, create, update, delete: if false;
+}
+
+match /plannerNotificationRequests/{requestId} {
+  allow read, create, update, delete: if false;
+}
+match /plannerScheduleState/{ownerUid} {
+  allow read, create, update, delete: if false;
+}
+match /feedbackSubmissions/{feedbackId} {
+  allow read, create, update, delete: if false;
+  match /deliveries/{deliveryId} {
+    allow read, create, update, delete: if false;
+  }
+}
+match /feedbackRateLimits/{windowId} {
+  allow read, create, update, delete: if false;
+}
+match /feedbackOperations/{document=**} {
+  allow read, create, update, delete: if false;
+}
+match /feedbackCleanup/{document=**} {
+  allow read, create, update, delete: if false;
+}
+  }
+}

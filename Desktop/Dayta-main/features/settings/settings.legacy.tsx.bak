@@ -1,0 +1,971 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+
+import { Ionicons } from "@expo/vector-icons";
+import { GoogleSignin } from "@react-native-google-signin/google-signin";
+import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut, User } from "firebase/auth";
+import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+
+import { router } from "expo-router";
+import { auth, db } from "../../services/firebase";
+import { fetchPrimaryCalendarEvents } from "../../services/googleCalendarApi";
+import { connectGoogleCalendar } from "../../services/googleCalendarAuth";
+import { runGoogleCalendarAutoSync } from "../../services/googleCalendarAutoSync";
+import { disconnectGoogleCalendar } from "../../services/googleCalendarDisconnect";
+import { saveGoogleCalendarIntegration } from "../../services/googleCalendarIntegration";
+import { syncGoogleEventsToFirestore } from "../../services/googleCalendarSync";
+//import { configureGoogleSignIn } from "../../services/googleSignInConfig";
+import {
+  getNotificationPermissionStatus,
+  requestGoalAppNotificationPermission,
+  scheduleGoalAppTestNotification,
+} from "../../services/notifications";
+import {
+  disableExpoPushNotificationsAsync,
+  registerForExpoPushNotificationsAsync,
+} from "../../services/pushNotifications";
+import { APP_THEMES, type AppThemeId } from "../../services/theme";
+import { useAppTheme } from "../../services/useAppTheme";
+import { useCurrentAppTheme } from "../../services/useCurrentAppTheme";
+import {
+  saveUserThemePreference
+} from "../../services/userPreferences";
+import {
+  getDefaultPlannerPreferences,
+  PLANNER_SUGGESTION_TYPES,
+  subscribePlannerPreferences,
+  updatePlannerPreferences,
+  type PlannerPreferencesDoc,
+} from "../../services/plannerSuggestions";
+import { getPlannerSuggestionPresentation } from "../../services/plannerPresentation";
+
+console.log("SETTINGS SCREEN LOADED");
+
+type CalendarIntegrationState = {
+  connected: boolean;
+  googleEmail: string | null;
+  selectedCalendarId: string | null;
+  lastSyncAtMs: number | null;
+  lastError: string | null;
+} | null;
+
+export default function SettingsScreen() {
+  const [user, setUser] = useState<User | null>(auth.currentUser);
+  const [busy, setBusy] = useState(false);
+
+  const [pushBusy, setPushBusy] = useState(false);
+  const [plannerPreferences, setPlannerPreferences] = useState<PlannerPreferencesDoc>(
+    getDefaultPlannerPreferences()
+  );
+  const [plannerSaving, setPlannerSaving] = useState(false);
+
+  const [calendarIntegration, setCalendarIntegration] =
+    useState<CalendarIntegrationState>(null);
+
+const { themeId: selectedThemeId } = useCurrentAppTheme();
+
+const [savingTheme, setSavingTheme] = useState(false);
+
+const saveSignedInUserProfile = async (signedInUser: User) => {
+  await setDoc(
+    doc(db, "users", signedInUser.uid),
+    {
+      email: signedInUser.email ?? null,
+      name: signedInUser.displayName ?? null,
+      photoURL: signedInUser.photoURL ?? null,
+      lastLoginAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      subscriptionTier: "free",
+    },
+    { merge: true }
+  );
+};
+
+const theme = useAppTheme(selectedThemeId);
+const styles = useMemo(() => makeStyles(theme), [theme]);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    if (!user?.uid) {
+      setPlannerPreferences(getDefaultPlannerPreferences());
+      return;
+    }
+    return subscribePlannerPreferences(user.uid, setPlannerPreferences, () => undefined);
+  }, [user?.uid]);
+  const savePlannerPreference = async (
+    patch: Partial<Omit<PlannerPreferencesDoc, "updatedAtMs">>
+  ) => {
+    if (!user?.uid) {
+      Alert.alert("Sign in required", "Sign in to update Planner settings.");
+      return;
+    }
+    setPlannerSaving(true);
+    try {
+      await updatePlannerPreferences(user.uid, {...plannerPreferences, ...patch});
+    } catch {
+      Alert.alert("Planner settings not saved", "Please try again in a moment.");
+    } finally {
+      setPlannerSaving(false);
+    }
+  };
+
+useEffect(() => {
+GoogleSignin.configure({
+  webClientId:
+    "110225211882-f22f4m1qfrqg8v32eroeuunmogu7ttdo.apps.googleusercontent.com",
+  scopes: ["https://www.googleapis.com/auth/calendar"],
+  offlineAccess: false,
+  forceCodeForRefreshToken: false,
+});
+}, []);
+
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+
+    if (!uid) {
+      setCalendarIntegration(null);
+      return;
+    }
+
+    const ref = doc(db, "users", uid, "integrations", "googleCalendar");
+
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        if (!snap.exists()) {
+          setCalendarIntegration(null);
+          return;
+        }
+
+        const data = snap.data() as any;
+
+        setCalendarIntegration({
+          connected: !!data.connected,
+          googleEmail: data.googleEmail ?? null,
+          selectedCalendarId: data.selectedCalendarId ?? null,
+          lastSyncAtMs: data.lastSyncAtMs ?? null,
+          lastError: data.lastError ?? null,
+        });
+      },
+      (err) => {
+        console.error("googleCalendar integration subscription failed", err);
+      }
+    );
+
+    return () => unsub();
+  }, [user]);
+
+ useEffect(() => {
+  if (!calendarIntegration?.connected) return;
+
+  runGoogleCalendarAutoSync(calendarIntegration)
+    .then((result) => {
+      console.log("google auto-sync result", result);
+    })
+    .catch((err) => {
+      console.log("[Settings] google auto-sync skipped", err);
+    });
+}, [calendarIntegration?.connected]); 
+
+
+
+  function formatLastSync(lastSyncAtMs?: number | null) {
+    if (!lastSyncAtMs) return "Never";
+    return new Date(lastSyncAtMs).toLocaleString();
+  }
+
+const handleGoogleSignIn = async () => {
+  try {
+    setBusy(true);
+
+    console.log("BUTTON PRESSED");
+
+    //configureGoogleSignIn();
+    await GoogleSignin.hasPlayServices();
+    const signInResult = await GoogleSignin.signIn();
+
+    console.log("GOOGLE SIGN IN RESULT:", JSON.stringify(signInResult, null, 2));
+
+    const idToken = signInResult.data?.idToken ?? null;
+
+    if (!idToken) {
+      Alert.alert("Sign-in failed", "No idToken returned from Google.");
+      return;
+    }
+
+    const credential = GoogleAuthProvider.credential(idToken);
+    const userCred = await signInWithCredential(auth, credential);
+    console.log("FIREBASE USER:", userCred.user.email, userCred.user.uid);
+
+    const signedInUser = userCred.user;
+
+    await saveSignedInUserProfile(signedInUser);
+    console.log("PROFILE SAVED");
+    
+
+    Alert.alert("Signed in", `Welcome, ${signedInUser.displayName ?? "friend"}!`);
+  } catch (e: any) {
+    console.error("GOOGLE SIGN IN ERROR:", e);
+    Alert.alert("Sign-in failed", e?.message ?? "Unknown error");
+  } finally {
+    setBusy(false);
+  }
+};
+
+const handleSelectTheme = async (themeId: AppThemeId) => {
+  const uid = auth.currentUser?.uid;
+
+  if (!uid) {
+    Alert.alert("Sign in required", "Please sign in to save your theme.");
+    return;
+  }
+
+  try {
+    setSavingTheme(true);
+    await saveUserThemePreference(uid, themeId);
+  } catch (e: any) {
+    console.error("[Settings] failed to save theme", e);
+    Alert.alert("Theme not saved", e?.message ?? "Unknown error");
+  } finally {
+    setSavingTheme(false);
+  }
+};
+
+ /**useEffect(() => {
+  const signInFromGoogleResponse = async () => {
+
+     console.log("GOOGLE RESPONSE:", response);
+    if (response?.type !== "success") return;
+
+    console.log("AUTH:", response.authentication);
+  console.log("PARAMS:", response.params);
+    try {
+      setBusy(true);
+
+      
+      const idToken = response.params?.id_token ?? response.authentication?.idToken;
+      console.log("ID TOKEN PRESENT:", !!idToken);
+
+      if (!idToken) {
+        console.log("Full Google response:", JSON.stringify(response, null, 2));
+        throw new Error("Google sign-in did not return an ID token.");
+      }
+
+      const credential = GoogleAuthProvider.credential(idToken);
+      const userCred = await signInWithCredential(auth, credential);
+
+      await saveSignedInUserProfile(userCred.user);
+
+      Alert.alert(
+        "Signed in",
+        `Welcome, ${userCred.user.displayName ?? "friend"}!`
+      );
+    } catch (e: any) {
+      console.error("native google sign-in failed", e);
+      Alert.alert("Sign-in failed", e?.message ?? "Unknown error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  signInFromGoogleResponse();
+}, [response]); **/
+
+    const runGoogleCalendarSync = async () => {
+    const uid = auth.currentUser?.uid;
+
+    if (!uid) {
+      Alert.alert("Sign in required", "Please sign in first.");
+      return null;
+    }
+
+    const token = await connectGoogleCalendar();
+    console.log("Google Calendar connected successfully");
+
+    const now = new Date();
+    const timeMin = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() - 7
+    ).toISOString();
+
+    const timeMax = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      now.getDate()
+    ).toISOString();
+
+    const eventsResponse = await fetchPrimaryCalendarEvents(
+      token,
+      timeMin,
+      timeMax
+    );
+
+    const events = eventsResponse.items ?? [];
+
+    console.log("Google Calendar events fetched:", events.length);
+
+    const syncResult = await syncGoogleEventsToFirestore(uid, events, "primary");
+
+    await saveGoogleCalendarIntegration(uid, {
+      connected: true,
+      googleEmail: auth.currentUser?.email ?? null,
+      selectedCalendarId: "primary",
+      lastSyncAtMs: Date.now(),
+      lastError: null,
+    });
+
+    console.log("Google Calendar sync result:", syncResult);
+
+    return {
+      eventsCount: events.length,
+      written: syncResult.written,
+    };
+  };
+
+  const handleConnectGoogleCalendar = async () => {
+    try {
+      const result = await runGoogleCalendarSync();
+
+      if (!result) return;
+
+      Alert.alert(
+        "Google Connected",
+        `Fetched ${result.eventsCount} event(s)\nSaved ${result.written} event(s) to Firestore.`
+      );
+    } catch (err: any) {
+      console.error(err);
+
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        await saveGoogleCalendarIntegration(uid, {
+          connected: false,
+          lastError: err?.message ?? "Unknown error",
+        });
+      }
+
+      Alert.alert("Google connection failed", err?.message ?? "Unknown error");
+    }
+  };
+
+    const handleSyncGoogleCalendar = async () => {
+    try {
+      const result = await runGoogleCalendarSync();
+
+      if (!result) return;
+
+      Alert.alert(
+        "Google Calendar Synced",
+        `Fetched ${result.eventsCount} event(s)\nSaved ${result.written} event(s) to Firestore.`
+      );
+    } catch (err: any) {
+      console.error(err);
+
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        await saveGoogleCalendarIntegration(uid, {
+          connected: false,
+          lastError: err?.message ?? "Unknown error",
+        });
+      }
+
+      Alert.alert("Google sync failed", err?.message ?? "Unknown error");
+    }
+  };
+const handleDisconnectGoogleCalendar = async () => {
+  try {
+    const uid = auth.currentUser?.uid;
+
+    if (!uid) {
+      Alert.alert("Sign in required", "Please sign in first.");
+      return;
+    }
+
+    setBusy(true);
+
+    const result = await disconnectGoogleCalendar(uid);
+
+    Alert.alert(
+      "Google Calendar disconnected",
+      `Removed ${result.deleted} synced event(s).`
+    );
+  } catch (err: any) {
+    console.error(err);
+    Alert.alert("Disconnect failed", err?.message ?? "Unknown error");
+  } finally {
+    setBusy(false);
+  }
+};
+
+const handleRegisterPushNotifications = async () => {
+  const uid = auth.currentUser?.uid;
+
+  if (!uid) {
+    Alert.alert("Sign in required", "Please sign in first.");
+    return;
+  }
+
+  try {
+    setPushBusy(true);
+
+    const result = await registerForExpoPushNotificationsAsync(uid);
+
+    if (!result.ok) {
+      Alert.alert("Push registration failed", result.reason);
+      return;
+    }
+
+    Alert.alert(
+      "Push registered",
+      `Expo push token saved.\n\n${result.expoPushToken.slice(0, 24)}...`
+    );
+  } catch (e: any) {
+    console.error("[Push] register failed", e);
+    Alert.alert("Push registration failed", e?.message ?? "Unknown error");
+  } finally {
+    setPushBusy(false);
+  }
+};
+
+const handleDisablePushNotifications = async () => {
+  const uid = auth.currentUser?.uid;
+
+  if (!uid) {
+    Alert.alert("Sign in required", "Please sign in first.");
+    return;
+  }
+
+  try {
+    setPushBusy(true);
+
+    await disableExpoPushNotificationsAsync(uid);
+
+    Alert.alert("Push disabled", "Push notifications are disabled for this account.");
+  } catch (e: any) {
+    console.error("[Push] disable failed", e);
+    Alert.alert("Push disable failed", e?.message ?? "Unknown error");
+  } finally {
+    setPushBusy(false);
+  }
+};
+
+ const handleLogout = async () => {
+  try {
+    await GoogleSignin.signOut();
+  } catch (e) {
+    console.log("Google signOut skipped:", e);
+  }
+
+  await signOut(auth);
+  Alert.alert("Logged out");
+};
+
+return (
+  <ScrollView
+    contentContainerStyle={styles.container}
+    showsVerticalScrollIndicator={false}
+  >
+
+      
+
+      <Pressable
+  style={[styles.button, busy && styles.buttonDisabled]}
+  onPress={handleGoogleSignIn}
+  disabled={busy}
+>
+  <Text style={styles.buttonText}>
+    {busy ? "Signing in..." : "Sign in with Google"}
+  </Text>
+</Pressable>
+
+      <Pressable style={[styles.button, styles.secondary]} onPress={handleLogout}>
+        <Text style={styles.secondaryButtonText}>Log out</Text>
+      </Pressable>
+ 
+       <Pressable style={styles.button} onPress={handleConnectGoogleCalendar}>
+        <Text style={styles.buttonText}>Connect Google Calendar</Text>
+      </Pressable> 
+
+            <Pressable style={styles.button} onPress={handleSyncGoogleCalendar}>
+        <Text style={styles.buttonText}>Sync Google Calendar</Text>
+      </Pressable>
+
+
+
+           {calendarIntegration?.connected && (
+  <Pressable
+    style={[styles.button, styles.secondary]}
+    onPress={handleDisconnectGoogleCalendar}
+    disabled={busy}
+  >
+    <Text style={styles.secondaryButtonText}>
+      {busy ? "Working..." : "Disconnect Google Calendar"}
+    </Text>
+
+
+  </Pressable>
+
+  
+)}
+
+      <Pressable
+  style={[styles.button, styles.secondary]}
+  onPress={() => router.push("/settings/automation")}
+  android_ripple={{ color: "#4b5563" }}
+>
+  <Text style={styles.secondaryButtonText}>Automation Preferences</Text>
+</Pressable>
+
+<View style={styles.card}>
+  <Text style={styles.cardTitle}>Support</Text>
+  <Pressable
+    accessibilityRole="button"
+    accessibilityLabel="Feedback & Support"
+    accessibilityHint="Opens the Feedback & Support form"
+    onPress={() => router.push("/settings/feedback" as any)}
+    style={({pressed}) => [
+      styles.supportRow,
+      pressed && styles.supportRowPressed,
+    ]}
+  >
+    <Ionicons
+      accessibilityElementsHidden
+      color={theme.colors.primary}
+      name="chatbubble-ellipses-outline"
+      size={24}
+    />
+    <View style={styles.supportCopy}>
+      <Text style={styles.supportTitle}>Feedback & Support</Text>
+      <Text style={styles.helperText}>
+        Share feedback, request a feature, or report a problem.
+      </Text>
+    </View>
+    <Ionicons
+      accessibilityElementsHidden
+      color={theme.colors.textMuted}
+      name="chevron-forward"
+      size={20}
+    />
+  </Pressable>
+</View>
+
+<View style={styles.card}>
+  <Text style={styles.cardTitle}>Push Notifications</Text>
+
+  <Text style={styles.helperText}>
+    Register this device for future server-sent reminders. Local reminders still work separately for now.
+  </Text>
+
+  <Pressable
+    style={[styles.button, pushBusy && styles.buttonDisabled]}
+    onPress={handleRegisterPushNotifications}
+    disabled={pushBusy}
+  >
+    <Text style={styles.buttonText}>
+      {pushBusy ? "Registering..." : "Register push token"}
+    </Text>
+  </Pressable>
+
+  <Pressable
+    style={[styles.button, styles.secondary, pushBusy && styles.buttonDisabled]}
+    onPress={handleDisablePushNotifications}
+    disabled={pushBusy}
+  >
+    <Text style={styles.secondaryButtonText}>
+      {pushBusy ? "Working..." : "Disable push notifications"}
+    </Text>
+  </Pressable>
+</View>
+
+<Pressable
+  style={styles.button}
+  onPress={async () => {
+    const before = await getNotificationPermissionStatus();
+    const after = await requestGoalAppNotificationPermission();
+
+    Alert.alert(
+      "Notification permission",
+      `Before: ${before}\nAfter: ${after}`
+    );
+  }}
+>
+  <Text style={styles.buttonText}>Enable notifications</Text>
+</Pressable>
+
+<View style={styles.card}>
+  <View style={styles.settingHeader}>
+    <View style={styles.settingCopy}>
+      <Text style={styles.cardTitle}>Planner suggestions</Text>
+      <Text style={styles.helperText}>
+        Dayta uses structured planning facts such as due dates and calendar availability.
+        It does not read messages, comments, notes, or media.
+      </Text>
+    </View>
+    <Switch
+      value={plannerPreferences.enabled}
+      onValueChange={(value) => void savePlannerPreference({enabled: value})}
+      disabled={plannerSaving}
+      trackColor={{false: theme.colors.surfaceMuted, true: theme.colors.primary}}
+      thumbColor={theme.colors.surface}
+      accessibilityLabel="Enable Planner suggestions"
+    />
+  </View>
+  <Text style={styles.settingLabel}>Suggestion types</Text>
+  <Text style={styles.helperText}>Tap a type to show or hide it.</Text>
+  <View style={styles.plannerTypeGrid}>
+    {PLANNER_SUGGESTION_TYPES.map((type) => {
+      const visible = !plannerPreferences.hiddenSuggestionTypes.includes(type);
+      return (
+        <Pressable key={type}
+          style={[styles.plannerTypeChip, visible && styles.plannerTypeChipActive]}
+          disabled={plannerSaving || !plannerPreferences.enabled}
+          onPress={() => void savePlannerPreference({
+            hiddenSuggestionTypes: visible
+              ? [...plannerPreferences.hiddenSuggestionTypes, type]
+              : plannerPreferences.hiddenSuggestionTypes.filter((item) => item !== type),
+          })}
+          accessibilityRole="checkbox" accessibilityState={{checked: visible}}
+          accessibilityLabel={`${getPlannerSuggestionPresentation(type).label} suggestions`}>
+          <Text style={[styles.plannerTypeText, visible && styles.plannerTypeTextActive]}>
+            {getPlannerSuggestionPresentation(type).label}
+          </Text>
+        </Pressable>
+      );
+    })}
+  </View>
+  <View style={styles.settingHeader}>
+    <Text style={styles.settingLabel}>Personal planning suggestions</Text>
+    <Switch value={plannerPreferences.allowPersonalSuggestions}
+      onValueChange={(value) => void savePlannerPreference({allowPersonalSuggestions: value})}
+      disabled={plannerSaving || !plannerPreferences.enabled}
+      trackColor={{false: theme.colors.surfaceMuted, true: theme.colors.primary}}
+      thumbColor={theme.colors.surface}
+      accessibilityLabel="Allow personal Planner suggestions" />
+  </View>
+  <View style={styles.settingHeader}>
+    <Text style={styles.settingLabel}>Shared group suggestions</Text>
+    <Switch value={plannerPreferences.allowGroupSuggestions}
+      onValueChange={(value) => void savePlannerPreference({allowGroupSuggestions: value})}
+      disabled={plannerSaving || !plannerPreferences.enabled}
+      trackColor={{false: theme.colors.surfaceMuted, true: theme.colors.primary}}
+      thumbColor={theme.colors.surface}
+      accessibilityLabel="Allow shared group Planner suggestions" />
+  </View>
+  <Text style={styles.settingLabel}>Planner notifications</Text>
+  <Text style={styles.helperText}>
+    Planner notifications are batched suggestions. Opening one never applies an action.
+  </Text>
+  {([
+    ["Planner notifications", "notificationsEnabled",
+      plannerPreferences.notificationsEnabled],
+    ["Personal suggestions", "personalNotificationsEnabled",
+      plannerPreferences.personalNotificationsEnabled],
+    ["Group-related suggestions", "groupNotificationsEnabled",
+      plannerPreferences.groupNotificationsEnabled],
+    ["Scheduling conflicts", "conflictNotificationsEnabled",
+      plannerPreferences.conflictNotificationsEnabled],
+    ["Scheduling opportunities", "opportunityNotificationsEnabled",
+      plannerPreferences.opportunityNotificationsEnabled],
+  ] as const).map(([label, key, value]) => (
+    <View key={key} style={styles.settingHeader}>
+      <Text style={styles.settingLabel}>{label}</Text>
+      <Switch value={value}
+        onValueChange={(next) => void savePlannerPreference({[key]: next})}
+        disabled={plannerSaving || !plannerPreferences.enabled ||
+          (key !== "notificationsEnabled" &&
+            !plannerPreferences.notificationsEnabled)}
+        trackColor={{false: theme.colors.surfaceMuted,
+          true: theme.colors.primary}}
+        thumbColor={theme.colors.surface}
+        accessibilityLabel={`Enable ${label.toLowerCase()}`} />
+    </View>
+  ))}
+  <Pressable style={[styles.button, styles.secondary]} onPress={() => router.push("/planner" as any)}
+    accessibilityRole="button" accessibilityLabel="Open Planner suggestion center">
+    <Text style={styles.secondaryButtonText}>Open Planner</Text>
+  </Pressable>
+</View>
+
+<Pressable
+  style={[styles.button, styles.secondary]}
+  onPress={async () => {
+    try {
+      const id = await scheduleGoalAppTestNotification();
+
+      Alert.alert(
+        "Notification scheduled",
+        `Test notification scheduled in 5 seconds.\n\nID: ${id}`
+      );
+    } catch (e: any) {
+      Alert.alert(
+        "Notification failed",
+        e?.message ?? "Unknown error"
+      );
+    }
+  }}
+>
+  <Text style={styles.secondaryButtonText}>Send test notification</Text>
+</Pressable>
+
+<View style={styles.card}>
+  <Text style={styles.cardTitle}>Theme</Text>
+
+  <Text style={styles.helperText}>
+    Choose how the app looks. More screens will adopt this theme as the visual system rolls out.
+  </Text>
+
+  <View style={{ gap: 8, marginTop: 10 }}>
+    {(Object.values(APP_THEMES) as typeof APP_THEMES[keyof typeof APP_THEMES][]).map(
+      (themeOption) => (
+        <Pressable
+          key={themeOption.id}
+          onPress={() => handleSelectTheme(themeOption.id)}
+          disabled={savingTheme}
+          style={[
+            styles.themeOption,
+            selectedThemeId === themeOption.id && styles.themeOptionActive,
+          ]}
+        >
+          <View style={styles.themeOptionMain}>
+  <View style={styles.themeSwatchRow}>
+    <View
+      style={[
+        styles.themeSwatch,
+        { backgroundColor: themeOption.colors.background },
+      ]}
+    />
+
+    <View
+      style={[
+        styles.themeSwatch,
+        { backgroundColor: themeOption.colors.surface },
+      ]}
+    />
+
+    <View
+      style={[
+        styles.themeSwatch,
+        { backgroundColor: themeOption.colors.primary },
+      ]}
+    />
+
+    <View
+      style={[
+        styles.themeSwatch,
+        { backgroundColor: themeOption.colors.navBackground },
+      ]}
+    />
+  </View>
+
+  <Text style={styles.themeOptionTitle}>{themeOption.name}</Text>
+
+  <Text style={styles.themeOptionDescription}>
+    {themeOption.id === "daytaGold"
+  ? "Official dayTa brand theme with warm gold accents."
+  : themeOption.id === "indigoFocus"
+  ? "Refined productivity theme with violet accents."
+  : themeOption.id === "peachGrove"
+  ? "Grounded sage-and-paper theme for calm planning."
+  : themeOption.id === "graphiteDark"
+  ? "Dark mode for focused use."
+  : themeOption.id === "roseQuartz"
+  ? "Soft rose theme for a warmer, social feel."
+  : "Ultra-clean minimal productivity theme."}
+  </Text>
+</View>
+
+          <Text style={styles.themeOptionCheck}>
+            {selectedThemeId === themeOption.id ? "✓" : ""}
+          </Text>
+        </Pressable>
+      )
+    )}
+  </View>
+</View>
+
+      <View style={{ width: "100%", marginTop: 16 }}>
+        <Text style={styles.small}>
+          Google Calendar:{" "}
+          {calendarIntegration?.connected ? "Connected" : "Not connected"}
+        </Text>
+
+        {!!calendarIntegration?.googleEmail && (
+          <Text style={styles.small}>
+            Google account: {calendarIntegration.googleEmail}
+          </Text>
+        )}
+
+        <Text style={styles.small}>
+          Last sync: {formatLastSync(calendarIntegration?.lastSyncAtMs)}
+        </Text>
+
+        {!!calendarIntegration?.lastError && (
+          <Text style={styles.small}>
+            Last error: {calendarIntegration.lastError}
+          </Text>
+        )}
+      </View>
+
+      <Text style={styles.small}>
+        Status: {user ? `Signed in as ${user.email}` : "Signed out"}
+      </Text>
+
+      <Text style={styles.small}>
+        UID: {auth.currentUser?.uid ?? "none"}
+      </Text>
+    </ScrollView>
+  );
+}
+
+const makeStyles = (theme: ReturnType<typeof useAppTheme>) =>
+  StyleSheet.create({
+  container: {
+  flexGrow: 1,
+  alignItems: "center",
+  padding: 20,
+  paddingTop: 48,
+  backgroundColor: theme.colors.background,
+},
+  title: {
+  fontSize: 24,
+  fontWeight: "bold",
+  marginBottom: 16,
+  color: theme.colors.text,
+},
+  button: {
+    width: "100%",
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    marginTop: 10,
+    backgroundColor: theme.colors.primary,
+  },
+ secondary: {
+  backgroundColor: theme.colors.surfaceMuted,
+},
+  buttonDisabled: { opacity: 0.45 },
+  buttonText: {
+  color: theme.colors.primaryText,
+  fontSize: 16,
+  fontWeight: "600",
+},
+  small: {
+  marginTop: 14,
+  color: theme.colors.textMuted,
+},
+themeOption: {
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+  backgroundColor: theme.colors.surface,
+  borderRadius: 14,
+  padding: 12,
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+},
+themeOptionMain: {
+  flex: 1,
+  minWidth: 0,
+},
+
+themeSwatchRow: {
+  flexDirection: "row",
+  alignItems: "center",
+  gap: 6,
+  marginBottom: 8,
+},
+
+themeSwatch: {
+  width: 20,
+  height: 20,
+  borderRadius: 10,
+  borderWidth: 1,
+  borderColor: theme.colors.border,
+},
+
+themeOptionDescription: {
+  marginTop: 5,
+  fontSize: 12,
+  color: theme.colors.textMuted,
+  lineHeight: 17,
+},
+
+themeOptionActive: {
+ borderColor: theme.colors.primary,
+backgroundColor: theme.colors.badge,
+},
+
+themeOptionTitle: {
+  fontSize: 15,
+  fontWeight: "700",
+  color: theme.colors.text,
+},
+
+themeOptionCheck: {
+  fontSize: 18,
+  fontWeight: "800",
+  color: theme.colors.primary,
+},
+  card: {
+  width: "100%",
+  marginTop: 16,
+  padding: 14,
+  borderRadius: 14,
+  backgroundColor: theme.colors.surface,
+borderColor: theme.colors.border,
+  borderWidth: 1,
+  },
+  settingHeader: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 14,
+  },
+  settingCopy: { flex: 1 },
+  supportRow: {
+    minHeight: 64,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 8,
+    paddingVertical: 8,
+  },
+  supportRowPressed: { opacity: 0.7 },
+  supportCopy: { flex: 1, minWidth: 0 },
+  supportTitle: {
+    color: theme.colors.text,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  settingLabel: { color: theme.colors.text, fontSize: 14, fontWeight: "800", flex: 1 },
+  plannerTypeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  plannerTypeChip: { minHeight: 42, justifyContent: "center", borderRadius: 999,
+    borderColor: theme.colors.border, borderWidth: 1,
+    backgroundColor: theme.colors.surfaceMuted, paddingHorizontal: 12 },
+  plannerTypeChipActive: { borderColor: theme.colors.primary, backgroundColor: theme.colors.badge },
+  plannerTypeText: { color: theme.colors.textMuted, fontSize: 12, fontWeight: "800" },
+  plannerTypeTextActive: { color: theme.colors.badgeText },
+
+cardTitle: {
+  fontSize: 18,
+  fontWeight: "700",
+  color: theme.colors.text,
+},
+
+helperText: {
+  marginTop: 6,
+  fontSize: 12,
+color: theme.colors.textMuted,
+  lineHeight: 17,
+},
+secondaryButtonText: {
+  color: theme.colors.text,
+  fontSize: 16,
+  fontWeight: "600",
+},
+});
